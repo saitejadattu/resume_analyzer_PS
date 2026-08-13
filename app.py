@@ -57,6 +57,13 @@ def _candidate_widget_id(result: ScoreResult, occurrence: int = 0) -> str:
     return f"{url_hash(identity)}_{occurrence}"
 
 
+def _stored_candidate_id(result: ScoreResult) -> str:
+    """Return the per-run stable ID assigned when the pipeline completed."""
+    return st.session_state.get("shortlisting_result_ids", {}).get(
+        id(result), _candidate_widget_id(result)
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Visual helpers — where each keyword matched + GitHub status
 # --------------------------------------------------------------------------- #
@@ -338,11 +345,35 @@ if run_clicked:
 
     dl_bar.empty()
     proc_bar.empty()
-
-    results = outcome.results
-    if not results:
+    if not outcome.results:
         st.warning("No candidates were processed. Check the sheet contents / sharing.")
         st.stop()
+    # The run result (including parsed evidence and generated files) is the
+    # single source of truth for every later UI rerun.
+    st.session_state["shortlisting_outcome"] = outcome
+    st.session_state["shortlisting_config"] = {
+        "required": required_all, "preferred": preferred_all, "search_modes": search_modes,
+    }
+    st.session_state["shortlisting_result_ids"] = {
+        id(result): f"{_candidate_widget_id(result)}_{index}"
+        for index, result in enumerate(outcome.results)
+    }
+    st.session_state["selected_candidate_ids"] = set()
+    st.session_state["final_candidate_sheet_bytes"] = (
+        outcome.excel_path.read_bytes() if outcome.excel_path else b""
+    )
+    st.session_state["shortlisting_json_bytes"] = (
+        outcome.json_path.read_bytes() if outcome.json_path else b"{}"
+    )
+
+outcome = st.session_state.get("shortlisting_outcome")
+if outcome is not None:
+    results = outcome.results
+    current_config = {
+        "required": required_all, "preferred": preferred_all, "search_modes": search_modes,
+    }
+    if current_config != st.session_state.get("shortlisting_config"):
+        st.info("Configuration changed. Click Run shortlisting to process with the new settings; displayed results are from the previous run.")
 
     # ---- Summary metrics --------------------------------------------------
     st.success(f"Processed {len(results)} candidate(s).")
@@ -352,6 +383,35 @@ if run_clicked:
     ):
         col.metric(band, outcome.stats.get(band, 0))
 
+    st.subheader("Result filters")
+    categories = st.multiselect(
+        "Recommendation categories",
+        ["Strong Shortlist", "Shortlist", "Consider", "Reject"],
+        default=["Strong Shortlist", "Shortlist", "Consider", "Reject"],
+        key="result_status_filter",
+    )
+    evidence_filters = st.multiselect(
+        "Evidence filters",
+        ["Project Match", "Skills Match", "Verified Project", "Missing Required Keyword", "GitHub Working", "GitHub Missing", "GitHub Broken"],
+        key="result_evidence_filter",
+    )
+
+    def matches_filters(r):
+        evidence = r.keyword_evidence
+        flags = {
+            "Project Match": any(e.match_type == "project" for e in evidence),
+            "Skills Match": any(e.match_type == "skills" for e in evidence),
+            "Verified Project": any(e.verified for e in evidence),
+            "Missing Required Keyword": bool(r.missing_skills),
+            "GitHub Working": any(e.github_status is GithubStatus.WORKING for e in evidence),
+            "GitHub Missing": any(e.match_type == "project" and not e.project_github_url for e in evidence),
+            "GitHub Broken": any(e.github_status in (GithubStatus.BROKEN, GithubStatus.NOT_FOUND) for e in evidence),
+        }
+        return not evidence_filters or all(flags[name] for name in evidence_filters)
+
+    displayed_results = [r for r in results if r.recommendation in categories and matches_filters(r)]
+    st.caption(f"Showing {len(displayed_results)} of {len(results)} processed candidates.")
+
     # ---- Match matrix (candidate × keyword, at a glance) ------------------
     st.subheader("🔎 Match matrix")
     st.caption(
@@ -359,7 +419,7 @@ if run_clicked:
         "skills list  ·  — = not found.  GitHub: ✅ Working / ❌ Broken / "
         "⚠️ Not found / 🔒 Private / 🚫 None / ⏸️ Not checked."
     )
-    matrix = _keyword_matrix(results, outcome.jd)
+    matrix = _keyword_matrix(displayed_results, outcome.jd)
     st.dataframe(
         matrix,
         use_container_width=True,
@@ -374,7 +434,7 @@ if run_clicked:
     # ---- Per-candidate visual detail -------------------------------------
     st.subheader("🧑‍💻 Candidate details")
     st.caption("Expand a candidate to see exactly where each keyword matched.")
-    for occurrence, r in enumerate(sorted(results, key=lambda x: x.score, reverse=True)):
+    for r in sorted(displayed_results, key=lambda x: x.score, reverse=True):
         gh = _github_cell(r)
         with st.expander(
             f"{r.candidate.display_name}  —  {round(r.score)}/100  ·  "
@@ -387,7 +447,7 @@ if run_clicked:
                     "⬇️ Download Profile",
                     path.read_bytes(),
                     profile_name(r),
-                    key=f"download_profile_{_candidate_widget_id(r, occurrence)}",
+                    key=f"download_profile_{_stored_candidate_id(r)}",
                     use_container_width=True,
                 )
             else:
@@ -395,9 +455,10 @@ if run_clicked:
 
     # ---- Full results table (all columns, sortable) ----------------------
     df = to_dataframe(results)
+    view_df = to_dataframe(displayed_results)
     st.subheader("📋 Full results table")
     st.dataframe(
-        df,
+        view_df,
         use_container_width=True,
         hide_index=True,
         column_config={
@@ -409,18 +470,14 @@ if run_clicked:
     )
 
     # ---- Downloads --------------------------------------------------------
-    xlsx_buf = io.BytesIO()
-    with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Shortlist")
-    json_bytes = (
-        outcome.json_path.read_bytes() if outcome.json_path else b"{}"
-    )
+    final_sheet_bytes = st.session_state["final_candidate_sheet_bytes"]
+    json_bytes = st.session_state["shortlisting_json_bytes"]
 
     d1, d2 = st.columns(2)
     d1.download_button(
-        "⬇️ Download Excel",
-        data=xlsx_buf.getvalue(),
-        file_name="final_shortlisted.xlsx",
+        "⬇️ Download Final Candidate Sheet",
+        data=final_sheet_bytes,
+        file_name="final_candidate_sheet.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
@@ -431,35 +488,39 @@ if run_clicked:
         mime="application/json",
         use_container_width=True,
     )
+    st.caption("Direct Google Sheets writing is not configured; download the final XLSX or CSV and import it into Google Sheets.")
     st.subheader("Profile downloads")
-    categories = st.multiselect("Recommendation categories", ["Strong Shortlist", "Shortlist", "Consider", "Reject"], default=["Strong Shortlist", "Shortlist", "Consider"])
-    evidence_filters = st.multiselect("Evidence filters", ["Project Match", "Skills Match", "Verified Project", "Missing Required Keyword", "GitHub Working", "GitHub Missing", "GitHub Broken"])
-    def matches_filters(r):
-        evidence = r.keyword_evidence
-        flags = {
-            "Project Match": any(e.match_type == "project" for e in evidence),
-            "Skills Match": any(e.match_type == "skills" for e in evidence),
-            "Verified Project": any(e.verified for e in evidence),
-            "Missing Required Keyword": bool(r.missing_skills),
-            "GitHub Working": any(e.github_status is GithubStatus.WORKING for e in evidence),
-            "GitHub Missing": any(e.match_type == "project" and not e.project_github_url for e in evidence),
-            "GitHub Broken": any(e.github_status in (GithubStatus.BROKEN, GithubStatus.NOT_FOUND) for e in evidence),
-        }
-        return not evidence_filters or all(flags[name] for name in evidence_filters)
-    shown = [r for r in results if r.recommendation in categories and matches_filters(r)]
-    selection_keys = [f"profile_{_candidate_widget_id(r, i)}" for i, r in enumerate(shown)]
+    shown = displayed_results
+    selected_ids = st.session_state.setdefault("selected_candidate_ids", set())
+    selection_keys = [f"profile_{_stored_candidate_id(r)}" for r in shown]
+    all_selection_keys = [f"profile_{_stored_candidate_id(r)}" for r in results]
     controls = st.columns(5)
     if controls[0].button("Select All"):
-        for key in selection_keys: st.session_state[key] = True
+        for key, result in zip(selection_keys, shown):
+            st.session_state[key] = True
+            selected_ids.add(_stored_candidate_id(result))
     if controls[1].button("Clear Selection"):
-        for key in selection_keys: st.session_state[key] = False
+        for key in all_selection_keys: st.session_state[key] = False
+        selected_ids.clear()
     for col, label in zip(controls[2:], ["Strong Shortlist", "Shortlist", "Consider"]):
         if col.button(f"Select {label}"):
-            for key, result in zip(selection_keys, shown): st.session_state[key] = result.recommendation == label
-    selected = []
+            for result in results:
+                key = f"profile_{_stored_candidate_id(result)}"
+                chosen = result.recommendation == label
+                st.session_state[key] = chosen
+                candidate_id = _stored_candidate_id(result)
+                if chosen:
+                    selected_ids.add(candidate_id)
+                else:
+                    selected_ids.discard(candidate_id)
     for i, r in enumerate(shown):
+        candidate_id = _stored_candidate_id(r)
+        st.session_state.setdefault(selection_keys[i], candidate_id in selected_ids)
         if st.checkbox(f"{r.candidate.display_name} — {r.recommendation}", key=selection_keys[i]):
-            selected.append(r)
+            selected_ids.add(candidate_id)
+        else:
+            selected_ids.discard(candidate_id)
+    selected = [r for r in results if _stored_candidate_id(r) in selected_ids]
     st.caption(f"{len(selected)} profiles selected")
     st.download_button("⬇️ Download Selected Profiles", profiles_zip(selected) if selected else b"", "shortlisted_profiles.zip", "application/zip", disabled=not selected, use_container_width=True)
     st.download_button("⬇️ Download Shortlist CSV", df.to_csv(index=False).encode("utf-8-sig"), "shortlist.csv", "text/csv", use_container_width=True)

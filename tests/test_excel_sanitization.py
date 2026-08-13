@@ -4,7 +4,10 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from resume_shortlisting.excel_writer import sanitize_excel_value, write_excel
+from resume_shortlisting.excel_writer import (
+    sanitize_excel_value, to_final_candidate_dataframe, write_excel,
+    write_final_candidate_sheet,
+)
 from resume_shortlisting.models import Candidate, GithubStatus, ScoreResult, SkillMatch
 
 
@@ -35,6 +38,26 @@ class ExcelSanitizationTests(unittest.TestCase):
         self.assertIn("☑ Python for Everybody  University of Michigan �", joined)
         self.assertNotIn("\x15", joined)
         self.assertNotIn("\x00", joined)
+
+    def test_final_sheet_preserves_source_columns_and_appends_decision(self):
+        result = ScoreResult(
+            candidate=Candidate(
+                name="Ana", email="ana@example.com", resume_url="https://example.com/a.pdf",
+                source_data={"Candidate Name": "Ana", "Phone": "123", "Resume Link": "https://example.com/a.pdf"},
+            ),
+            score=40, recommendation="Reject", remarks="Rejected because Missing required evidence: Django.",
+        )
+        frame = to_final_candidate_dataframe([result])
+        self.assertEqual(
+            list(frame.columns),
+            ["Candidate Name", "Phone", "Resume Link", "Score", "Status", "Remarks",
+             "Required Keywords Matched", "Required Keywords Missing", "Project Matches",
+             "Skills Matches", "Project GitHub Status"],
+        )
+        self.assertEqual(frame.loc[0, "Status"], "Rejected")
+        with tempfile.TemporaryDirectory() as directory:
+            output = write_final_candidate_sheet([result], Path(directory) / "final.xlsx")
+            self.assertEqual(load_workbook(output).active.max_row, 2)
 
 
 if __name__ == "__main__":

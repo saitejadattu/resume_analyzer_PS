@@ -109,6 +109,10 @@ class ResumeSource(ABC):
                     email=cell("email"),
                     resume_url=resume_url,
                     extra=extra,
+                    source_data={
+                        str(col): "" if pd.isna(row.get(col, "")) else str(row.get(col, "")).strip()
+                        for col in df.columns
+                    },
                 )
             )
 

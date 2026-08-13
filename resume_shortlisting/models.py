@@ -39,6 +39,9 @@ class Candidate(BaseModel):
     resume_url: str = ""
     # Any additional columns (phone, college, branch, ...) preserved verbatim.
     extra: dict[str, str] = Field(default_factory=dict)
+    # Original source row, retained so the final candidate sheet can preserve
+    # the input columns and their original header names.
+    source_data: dict[str, str] = Field(default_factory=dict)
 
     @property
     def display_name(self) -> str:

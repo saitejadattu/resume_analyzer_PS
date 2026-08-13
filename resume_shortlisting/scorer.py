@@ -4,6 +4,46 @@ from . import config
 from .models import Candidate, GithubStatus, JDSpec, ParsedResume, ScoreResult
 from .keyword_matcher import MatchReport
 
+
+def _evidence_remarks(jd: JDSpec, evidence: list, score: float) -> str:
+    """Deterministically explain the actual keyword and project evidence."""
+    by_skill = {item.skill.lower(): item for item in evidence if item.is_required}
+    parts: list[str] = []
+    missing: list[str] = []
+    project_github: list[str] = []
+    for skill in jd.required:
+        item = by_skill.get(skill.lower())
+        if item is None:
+            missing.append(skill)
+            continue
+        if item.match_type == "skills":
+            parts.append(f"{skill} found in Skills")
+        else:
+            source = item.source.replace("_", " ") or "project"
+            project = item.project_name or "an unnamed project"
+            parts.append(f"{skill} demonstrated in {project} ({source})")
+            if item.project_github_url:
+                status = item.github_status
+                if status is GithubStatus.WORKING:
+                    project_github.append("Project GitHub repository was provided and validated as working")
+                elif status is GithubStatus.NOT_CHECKED:
+                    project_github.append("Project GitHub repository was provided but validation was skipped")
+                elif status in (GithubStatus.BROKEN, GithubStatus.NOT_FOUND):
+                    project_github.append("Project GitHub repository was provided but could not be validated")
+                elif status is GithubStatus.PRIVATE:
+                    project_github.append("Project GitHub repository appears to be private and could not be independently verified")
+            else:
+                project_github.append("No project GitHub repository was provided")
+    if missing:
+        parts.append(f"Missing required evidence: {', '.join(missing)}")
+    # de-duplicate repeated GitHub wording when several keywords hit one project
+    parts.extend(dict.fromkeys(project_github))
+    if not parts:
+        return "No required-keyword evidence was found because the resume could not be processed."
+    if missing and score < 40:
+        return "Rejected because " + "; ".join(parts) + "."
+    return "; ".join(parts) + "."
+
 def score_candidate(candidate: Candidate, resume: ParsedResume, jd: JDSpec, match: MatchReport,
                     github_status: GithubStatus, github_urls: list[str], *, github_links=None,
                     github_checked=False, settings=None, kb=None, remarks="") -> ScoreResult:
@@ -33,4 +73,4 @@ def score_candidate(candidate: Candidate, resume: ParsedResume, jd: JDSpec, matc
       matched_projects=[e.project_name for e in required if e.match_type == "project"],
       github_found=bool(github_urls), github_working=github_status is GithubStatus.WORKING,
       github_status=github_status, github_urls=github_urls, github_links=github_links or [], github_checked=github_checked,
-      projects=resume.project_list, remarks=remarks or f"{len(required)}/{len(jd.required)} required keywords matched", score_breakdown=breakdown)
+      projects=resume.project_list, remarks=remarks or _evidence_remarks(jd, evidence, score), score_breakdown=breakdown)

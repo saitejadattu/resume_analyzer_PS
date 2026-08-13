@@ -54,6 +54,17 @@ COLUMNS: list[str] = [
     "Keyword Evidence",
 ]
 
+FINAL_COLUMNS = [
+    "Score", "Status", "Remarks", "Required Keywords Matched",
+    "Required Keywords Missing", "Project Matches", "Skills Matches",
+    "Project GitHub Status",
+]
+
+
+def final_status(result: ScoreResult) -> str:
+    """User-facing final-sheet status, derived from the scored recommendation."""
+    return "Rejected" if result.recommendation == "Reject" else result.recommendation
+
 
 def _row(result: ScoreResult) -> dict[str, object]:
     """Flatten a ScoreResult into a spreadsheet row."""
@@ -92,6 +103,54 @@ def to_dataframe(results: list[ScoreResult]) -> pd.DataFrame:
     return pd.DataFrame([_row(r) for r in ordered], columns=COLUMNS)
 
 
+def to_final_candidate_dataframe(results: list[ScoreResult]) -> pd.DataFrame:
+    """Preserve source columns and append final shortlisting decisions.
+
+    Source column order follows the input row retained on ``Candidate``. A
+    fallback set keeps programmatic/legacy candidates useful too.
+    """
+    source_columns: list[str] = []
+    for result in results:
+        for column in result.candidate.source_data:
+            if column not in source_columns:
+                source_columns.append(column)
+    if not source_columns:
+        source_columns = ["Student Name", "Email", "Resume URL"]
+    rows: list[dict[str, object]] = []
+    for result in results:
+        source = dict(result.candidate.source_data)
+        if not source:
+            source = {
+                "Student Name": result.candidate.display_name,
+                "Email": result.candidate.email,
+                "Resume URL": result.candidate.resume_url,
+            }
+        row = {column: source.get(column, "") for column in source_columns}
+        row.update({
+            "Score": round(result.score, 1),
+            "Status": final_status(result),
+            "Remarks": result.remarks,
+            "Required Keywords Matched": ", ".join(
+                evidence.skill for evidence in result.keyword_evidence if evidence.is_required
+            ),
+            "Required Keywords Missing": ", ".join(result.missing_skills),
+            "Project Matches": "; ".join(
+                f"{evidence.skill}: {evidence.project_name}" for evidence in result.keyword_evidence
+                if evidence.is_required and evidence.match_type == "project"
+            ),
+            "Skills Matches": ", ".join(
+                evidence.skill for evidence in result.keyword_evidence
+                if evidence.is_required and evidence.match_type == "skills"
+            ),
+            "Project GitHub Status": "; ".join(
+                f"{evidence.project_name or evidence.skill}: {evidence.github_status.value}"
+                for evidence in result.keyword_evidence if evidence.match_type == "project"
+            ),
+        })
+        rows.append({key: sanitize_excel_value(value) for key, value in row.items()})
+    return pd.DataFrame(rows, columns=[*source_columns, *FINAL_COLUMNS])
+
+
 def write_excel(results: list[ScoreResult], output_path: Path) -> Path:
     """Write results to an Excel workbook sorted by score desc (Step 14)."""
     df = to_dataframe(results)
@@ -102,6 +161,17 @@ def write_excel(results: list[ScoreResult], output_path: Path) -> Path:
         _autofit(writer, df, "Shortlist")
 
     logger.info("Wrote Excel report (%d rows) -> %s", len(df), output_path)
+    return output_path
+
+
+def write_final_candidate_sheet(results: list[ScoreResult], output_path: Path) -> Path:
+    """Write the all-candidates final sheet used by UI and CLI outputs."""
+    df = to_final_candidate_dataframe(results)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Final Candidates")
+        _autofit(writer, df, "Final Candidates")
+    logger.info("Wrote final candidate sheet (%d rows) -> %s", len(df), output_path)
     return output_path
 
 

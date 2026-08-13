@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import config
 from .downloader import download_all
-from .excel_writer import write_excel
+from .excel_writer import write_final_candidate_sheet
 from .jd_parser import parse_jd
 from .json_writer import write_json
 from .models import Candidate, JDSpec, ScoreResult
@@ -140,7 +140,7 @@ def run_shortlisting(
 
     excel_path = json_path = None
     if write_outputs:
-        excel_path = write_excel(results, excel_out or config.DEFAULT_EXCEL_OUTPUT)
+        excel_path = write_final_candidate_sheet(results, excel_out or config.DEFAULT_EXCEL_OUTPUT)
         json_path = write_json(results, json_out or config.DEFAULT_JSON_OUTPUT)
 
     stats: dict[str, int] = {}
