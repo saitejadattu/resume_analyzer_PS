@@ -5,13 +5,23 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from resume_shortlisting.excel_writer import (
-    sanitize_excel_value, to_final_candidate_dataframe, write_excel,
+    sanitize_excel_value, serialize_for_sheet, to_final_candidate_dataframe, write_excel,
     write_final_candidate_sheet,
 )
 from resume_shortlisting.models import Candidate, GithubStatus, ScoreResult, SkillMatch
 
 
 class ExcelSanitizationTests(unittest.TestCase):
+    def test_serializer_converts_complex_values_to_worksheet_scalars(self):
+        self.assertEqual(serialize_for_sheet(None), "")
+        self.assertEqual(serialize_for_sheet("text"), "text")
+        self.assertEqual(serialize_for_sheet(3), 3)
+        self.assertEqual(serialize_for_sheet(1.5), 1.5)
+        self.assertEqual(serialize_for_sheet(["React", "Node.js"]), "React; Node.js")
+        self.assertEqual(serialize_for_sheet(("React", "Node.js")), "React; Node.js")
+        self.assertIsInstance(serialize_for_sheet({"name": "App", "technologies": ["Python"]}), str)
+        self.assertIsInstance(serialize_for_sheet([{"name": "App"}, {"name": "API"}]), str)
+        self.assertIsInstance(serialize_for_sheet({"React", "Node.js"}), str)
     def test_sanitizer_preserves_supported_unicode_and_layout(self):
         value = "✓ Django ₹ café\tline\nnext\x00bad\x15text�"
         self.assertEqual(sanitize_excel_value(value), "✓ Django ₹ café\tline\nnextbadtext�")

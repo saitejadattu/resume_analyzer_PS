@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
+import re
 
 import requests
 from tenacity import (
@@ -29,6 +30,8 @@ from .models import Candidate
 from .utils import get_logger, is_valid_url, resume_cache_path
 
 logger = get_logger("downloader")
+
+_GOOGLE_DRIVE_FILE_RE = re.compile(r"drive\.google\.com/file/d/([^/?#]+)", re.IGNORECASE)
 
 # Transient errors worth retrying (timeouts, connection resets). HTTP 4xx like
 # 404 are NOT retried — they are permanent and raised as PermanentDownloadError.
@@ -85,6 +88,12 @@ def _looks_like_resume(content: bytes, content_type: str, suffix: str) -> bool:
 
 def _download_once(url: str, timeout: int) -> requests.Response:
     """Single HTTP GET; raises for status so 404 propagates as HTTPError."""
+    # Google Drive share pages are HTML, not resume files. Convert the common
+    # public ``/file/d/<id>/view`` form to its download endpoint while leaving
+    # every other source URL untouched.
+    match = _GOOGLE_DRIVE_FILE_RE.search(url)
+    if match:
+        url = f"https://drive.usercontent.google.com/download?id={match.group(1)}&export=download&confirm=t"
     resp = requests.get(
         url,
         timeout=timeout,

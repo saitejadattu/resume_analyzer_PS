@@ -65,6 +65,7 @@ COLUMN_ALIASES: dict[str, list[str]] = {
         "cv url",
         "cv link",
         "resume (pdf)",
+        "share your updated resume drive link (give public access). ensure your resume includes your latest skills, projects.",
     ],
     # Optional, carried through to output if present.
     "phone": ["phone", "phone number", "mobile", "contact", "phone no"],

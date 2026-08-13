@@ -7,6 +7,10 @@ columns required by the spec, sorted by score (best first).
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import date, datetime
+from dataclasses import asdict, is_dataclass
+from enum import Enum
+import json
 import re
 
 import pandas as pd
@@ -28,12 +32,40 @@ def sanitize_excel_value(value: object) -> object:
     newlines and tabs. Remove only characters that openpyxl/Excel cannot store,
     plus isolated surrogate code points which cannot be UTF-8 encoded.
     """
+    value = serialize_for_sheet(value)
     if value is None:
         return ""
     if not isinstance(value, str):
         return value
     value = _ILLEGAL_EXCEL_CHARS.sub("", value)
     return "".join(char for char in value if not 0xD800 <= ord(char) <= 0xDFFF)
+
+
+def serialize_for_sheet(value: object) -> object:
+    """Convert arbitrary result/source values to a worksheet-safe scalar.
+
+    Structured values remain structured through parsing and scoring. This is
+    only an output-boundary conversion for XLSX/CSV/DataFrame consumers.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool, date, datetime)):
+        return value
+    if isinstance(value, Enum):
+        return serialize_for_sheet(value.value)
+    if hasattr(value, "model_dump"):
+        return serialize_for_sheet(value.model_dump(mode="json"))
+    if is_dataclass(value):
+        return serialize_for_sheet(asdict(value))
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+    if isinstance(value, (list, tuple, set)):
+        return "; ".join(
+            serialize_for_sheet(item) if not isinstance(item, (dict, list, tuple, set))
+            else json.dumps(item, ensure_ascii=False, default=str, sort_keys=True)
+            for item in value
+        )
+    return str(value)
 
 # Column order per Step 14.
 COLUMNS: list[str] = [

@@ -9,8 +9,9 @@ from __future__ import annotations
 from .base import ResumeSource
 from .excel import ExcelSource
 from .google_sheet import GoogleSheetSource
+from .talent_pool import TalentPoolSource
 
-__all__ = ["ResumeSource", "ExcelSource", "GoogleSheetSource", "build_source"]
+__all__ = ["ResumeSource", "ExcelSource", "GoogleSheetSource", "TalentPoolSource", "build_source"]
 
 
 def build_source(spec: str) -> ResumeSource:

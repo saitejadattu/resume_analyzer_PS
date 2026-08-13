@@ -26,14 +26,74 @@ from resume_shortlisting.core import (
 from resume_shortlisting.excel_writer import to_dataframe
 from resume_shortlisting.models import GithubStatus, JDSpec, ScoreResult
 from resume_shortlisting.skills_kb import load_kb
-from resume_shortlisting.sources import ExcelSource, GoogleSheetSource
+from resume_shortlisting.sources import ExcelSource, GoogleSheetSource, TalentPoolSource
 from resume_shortlisting.profile_exports import profile_name, profile_path, profiles_zip
+from resume_shortlisting.talent_pool import run_talent_pool, talent_pool_xlsx_bytes, to_dataframe as talent_pool_dataframe
 from resume_shortlisting.utils import setup_logging, url_hash
 
 st.set_page_config(page_title="Resume Shortlisting", page_icon="📄", layout="wide")
 
 setup_logging(to_console=False)
 config.ensure_dirs()
+
+
+def _render_talent_pool() -> None:
+    """Separate Student Talent Pool UI; it never invokes JD shortlisting."""
+    st.title("Student Talent Pool")
+    st.caption("Evidence-based, role-specific capability profiling. Interest fields are preserved but do not affect scores.")
+    source_kind = st.sidebar.radio("Talent-pool source", ["Google Sheet URL", "Upload Excel / CSV"], key="talent_source")
+    sheet_url = st.sidebar.text_input("Google Sheet URL", key="talent_sheet") if source_kind == "Google Sheet URL" else ""
+    upload = st.sidebar.file_uploader("Excel / CSV of students", type=["xlsx", "xls", "csv"], key="talent_upload") if source_kind != "Google Sheet URL" else None
+    check_github = not st.sidebar.checkbox("Skip GitHub verification (faster)", value=True, key="talent_github")
+    if st.button("Process / Analyze Students", type="primary"):
+        try:
+            if source_kind == "Google Sheet URL":
+                if not sheet_url.strip(): raise ValueError("Please paste a Google Sheet URL.")
+                source = GoogleSheetSource(sheet_url.strip())
+            else:
+                if upload is None: raise ValueError("Please upload an Excel or CSV file.")
+                temp = tempfile.NamedTemporaryFile(delete=False, suffix=Path(upload.name).suffix or ".xlsx")
+                temp.write(upload.getbuffer()); temp.close(); source = ExcelSource(temp.name)
+            students = TalentPoolSource(source).read()
+            progress = st.progress(0.0, text="Processing student profiles…")
+            profiles = run_talent_pool(students, check_github=check_github, on_progress=lambda done, total: progress.progress(done / total, text=f"Processing student profiles… {done}/{total}"))
+            progress.empty(); st.session_state["talent_pool_profiles"] = profiles
+            # Streamlit receives the same in-memory bytes that were ZIP and
+            # openpyxl validated; no CSV/text or partially-written file path.
+            export_bytes = talent_pool_xlsx_bytes(profiles)
+            output = config.OUTPUTS_DIR / "student_talent_pool.xlsx"
+            output.write_bytes(export_bytes)
+            st.session_state["talent_pool_export"] = export_bytes
+        except Exception as exc:
+            st.error(f"Talent-pool run failed: {exc}")
+    profiles = st.session_state.get("talent_pool_profiles")
+    if not profiles:
+        st.info("Choose a student source and explicitly start processing.")
+        return
+    frame = talent_pool_dataframe(profiles)
+    roles = [column[:-6] for column in frame.columns if column.endswith(" Score")]
+    role = st.selectbox("Filter role", ["All"] + roles)
+    tiers = st.multiselect("Tier", ["A", "B", "C", "D"], default=["A", "B", "C", "D"])
+    ready = st.multiselect("Target Ready", ["YES", "NO", "NEEDS REVIEW"], default=["YES", "NO", "NEEDS REVIEW"])
+    priorities = st.multiselect("Target Priority", ["A — Target First", "B — Strong Candidate", "C — Developing", "D — Low Evidence"], default=["A — Target First", "B — Strong Candidate", "C — Developing", "D — Low Evidence"])
+    github_verified = st.checkbox("GitHub verified only", key="talent_verified")
+    minimum_projects = st.number_input("Minimum relevant projects", min_value=0, value=0, step=1, key="talent_projects")
+    view = frame if role == "All" else frame[frame[f"{role} Tier"].isin(tiers)]
+    view = view[view["Target Ready"].isin(ready) & view["Target Priority"].isin(priorities) & (view["Relevant Projects"] >= minimum_projects)]
+    if github_verified: view = view[view["GitHub Verification Status"] == "Verified"]
+    st.success(f"Processed {len(profiles)} student(s). Showing {len(view)}.")
+    st.dataframe(view, hide_index=True, width="stretch")
+    for profile in profiles:
+        with st.expander(f"{profile.candidate.display_name} — {profile.target_priority}"):
+            st.write({name: {"score": score.score, "tier": score.tier, "Skill Match": score.skill_score, "Relevant Projects": score.project_score, "GitHub Evidence": score.github_score, "Resume/Project Evidence": score.evidence_score, "Matched skills": score.matched_required_skills + score.matched_preferred_skills, "Relevant projects": score.relevant_projects} for name, score in profile.role_scores.items()})
+    st.download_button("Download Talent Pool XLSX", st.session_state.get("talent_pool_export", b""), "student_talent_pool.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.caption("The XLSX is Google Sheets-compatible; import it into Google Sheets. Direct Sheets writing is not configured.")
+
+
+app_mode = st.sidebar.radio("Module", ["Resume Analyzer", "Student Talent Pool"], key="app_module")
+if app_mode == "Student Talent Pool":
+    _render_talent_pool()
+    st.stop()
 
 
 @st.cache_resource(show_spinner=False)
@@ -128,7 +188,7 @@ def _render_candidate_detail(r: ScoreResult, jd: JDSpec) -> None:
                      "Project": e.project_name if e else "", "Source": e.source if e else "",
                      "Project GitHub": e.project_github_url if e else "", "GitHub status": e.github_status.value if e else "",
                      "Verified": "Yes" if e and e.verified else "No"})
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     st.caption("Score: " + " + ".join(f"{key} {value}" for key, value in r.score_breakdown.items()))
 
     if jd.preferred:
@@ -283,7 +343,7 @@ if required_all or preferred_all:
                 key=f"search_mode_{keyword}",
             )
 
-run_clicked = st.button("🚀 Run shortlisting", type="primary", use_container_width=True)
+run_clicked = st.button("🚀 Run shortlisting", type="primary", width="stretch")
 
 
 # --------------------------------------------------------------------------- #
@@ -422,7 +482,7 @@ if outcome is not None:
     matrix = _keyword_matrix(displayed_results, outcome.jd)
     st.dataframe(
         matrix,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "Score": st.column_config.ProgressColumn(
@@ -448,7 +508,7 @@ if outcome is not None:
                     path.read_bytes(),
                     profile_name(r),
                     key=f"download_profile_{_stored_candidate_id(r)}",
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.caption("Original cached resume is unavailable for download.")
@@ -459,7 +519,7 @@ if outcome is not None:
     st.subheader("📋 Full results table")
     st.dataframe(
         view_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "Matching Score": st.column_config.ProgressColumn(
@@ -479,14 +539,14 @@ if outcome is not None:
         data=final_sheet_bytes,
         file_name="final_candidate_sheet.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
+        width="stretch",
     )
     d2.download_button(
         "⬇️ Download JSON",
         data=json_bytes,
         file_name="report.json",
         mime="application/json",
-        use_container_width=True,
+        width="stretch",
     )
     st.caption("Direct Google Sheets writing is not configured; download the final XLSX or CSV and import it into Google Sheets.")
     st.subheader("Profile downloads")
@@ -522,8 +582,8 @@ if outcome is not None:
             selected_ids.discard(candidate_id)
     selected = [r for r in results if _stored_candidate_id(r) in selected_ids]
     st.caption(f"{len(selected)} profiles selected")
-    st.download_button("⬇️ Download Selected Profiles", profiles_zip(selected) if selected else b"", "shortlisted_profiles.zip", "application/zip", disabled=not selected, use_container_width=True)
-    st.download_button("⬇️ Download Shortlist CSV", df.to_csv(index=False).encode("utf-8-sig"), "shortlist.csv", "text/csv", use_container_width=True)
+    st.download_button("⬇️ Download Selected Profiles", profiles_zip(selected) if selected else b"", "shortlisted_profiles.zip", "application/zip", disabled=not selected, width="stretch")
+    st.download_button("⬇️ Download Shortlist CSV", df.to_csv(index=False).encode("utf-8-sig"), "shortlist.csv", "text/csv", width="stretch")
 else:
     st.caption(
         "Configure the source and keywords in the sidebar, then click "

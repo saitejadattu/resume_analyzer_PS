@@ -8,6 +8,7 @@ scoring/matching code.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import re
 
 import pandas as pd
 
@@ -30,7 +31,7 @@ class ResumeSource(ABC):
         df = self.load_dataframe()
         df = self._normalize_headers(df)
         resolved = self._resolve_columns(df)
-        self._validate_required(resolved)
+        self._validate_required(resolved, list(df.columns))
         return self._to_candidates(df, resolved)
 
     # ------------------------------------------------------------------ #
@@ -38,25 +39,41 @@ class ResumeSource(ABC):
     # ------------------------------------------------------------------ #
     @staticmethod
     def _normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
-        """Strip and de-duplicate whitespace in column headers."""
+        """Preserve source headers while removing only surrounding whitespace.
+
+        Matching is performed separately by :meth:`_header_key`, so exported
+        talent-pool data retains the spreadsheet's original header spelling.
+        """
         df = df.copy()
         df.columns = [str(c).strip() for c in df.columns]
         return df
 
     @staticmethod
+    def _header_key(value: str) -> str:
+        """Return a conservative comparison key for a spreadsheet header.
+
+        This handles Google Forms line wraps, tabs, case and harmless
+        punctuation variations without doing fuzzy/substring matching.
+        """
+        value = str(value).replace("\n", " ").replace("\r", " ").replace("\t", " ")
+        value = re.sub(r"[^\w]+", " ", value, flags=re.UNICODE)
+        return " ".join(value.casefold().split())
+
+    @staticmethod
     def _resolve_columns(df: pd.DataFrame) -> dict[str, str]:
         """Map canonical field -> actual column header using COLUMN_ALIASES."""
-        lower_to_actual = {str(c).strip().lower(): str(c) for c in df.columns}
+        key_to_actual = {ResumeSource._header_key(str(c)): str(c) for c in df.columns}
         resolved: dict[str, str] = {}
         for field, aliases in config.COLUMN_ALIASES.items():
             for alias in aliases:
-                if alias in lower_to_actual:
-                    resolved[field] = lower_to_actual[alias]
+                actual = key_to_actual.get(ResumeSource._header_key(alias))
+                if actual is not None:
+                    resolved[field] = actual
                     break
         return resolved
 
     @staticmethod
-    def _validate_required(resolved: dict[str, str]) -> None:
+    def _validate_required(resolved: dict[str, str], headers: list[str] | None = None) -> None:
         """Raise if a required canonical field could not be resolved."""
         missing = [f for f in config.REQUIRED_FIELDS if f not in resolved]
         if missing:
@@ -66,6 +83,7 @@ class ResumeSource(ABC):
                 + "; ".join(
                     f"{f} -> {config.COLUMN_ALIASES[f]}" for f in missing
                 )
+                + ". Detected headers: " + ", ".join(headers or [])
             )
 
     @staticmethod
