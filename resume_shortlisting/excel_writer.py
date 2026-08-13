@@ -1,0 +1,122 @@
+"""Excel output (Step 14).
+
+Writes the shortlisting results to a formatted ``.xlsx`` with exactly the
+columns required by the spec, sorted by score (best first).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import re
+
+import pandas as pd
+
+from .models import ScoreResult
+from .utils import get_logger
+
+logger = get_logger("excel_writer")
+
+# Excel permits tab, line-feed and carriage-return, but not the remaining C0
+# control range. PDF extraction can contain these invisible characters.
+_ILLEGAL_EXCEL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+
+
+def sanitize_excel_value(value: object) -> object:
+    """Return a worksheet-safe value without mutating the source data.
+
+    Keep normal Unicode (including replacement/checkmark/currency characters),
+    newlines and tabs. Remove only characters that openpyxl/Excel cannot store,
+    plus isolated surrogate code points which cannot be UTF-8 encoded.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return value
+    value = _ILLEGAL_EXCEL_CHARS.sub("", value)
+    return "".join(char for char in value if not 0xD800 <= ord(char) <= 0xDFFF)
+
+# Column order per Step 14.
+COLUMNS: list[str] = [
+    "Student Name",
+    "Email",
+    "Resume URL",
+    "Matched Skills",
+    "Matched In",
+    "Project Technologies",
+    "GitHub Found",
+    "GitHub Working",
+    "GitHub URLs",
+    "Matching Score",
+    "Recommendation",
+    "Missing Skills",
+    "Remarks",
+    "Score Breakdown",
+    "Keyword Evidence",
+]
+
+
+def _row(result: ScoreResult) -> dict[str, object]:
+    """Flatten a ScoreResult into a spreadsheet row."""
+    matched_in_str = "; ".join(
+        f"{skill} ({', '.join(sections)})"
+        for skill, sections in result.matched_in.items()
+    )
+    row = {
+        "Student Name": result.candidate.display_name,
+        "Email": result.candidate.email,
+        "Resume URL": result.candidate.resume_url,
+        "Matched Skills": ", ".join(result.matched_skills),
+        "Matched In": matched_in_str,
+        "Project Technologies": ", ".join(result.project_technologies),
+        "GitHub Found": "Yes" if result.github_found else "No",
+        "GitHub Working": "Yes" if result.github_working else "No",
+        "GitHub URLs": "\n".join(result.github_urls),
+        "Matching Score": round(result.score, 1),
+        "Recommendation": result.recommendation,
+        "Missing Skills": ", ".join(result.missing_skills),
+        "Remarks": result.remarks,
+        "Score Breakdown": "; ".join(f"{key}: {value}" for key, value in result.score_breakdown.items()),
+        "Keyword Evidence": "; ".join(
+            f"{e.skill}: {e.match_type}; project={e.project_name}; source={e.source}; "
+            f"github={e.project_github_url or 'Not Provided'}"
+            + (f"; github_status={e.github_status.value}" if e.project_github_url else "")
+            for e in result.keyword_evidence
+        ),
+    }
+    return {key: sanitize_excel_value(value) for key, value in row.items()}
+
+
+def to_dataframe(results: list[ScoreResult]) -> pd.DataFrame:
+    """Flatten results into a score-sorted dataframe (shared by Excel + UI)."""
+    ordered = sorted(results, key=lambda r: r.score, reverse=True)
+    return pd.DataFrame([_row(r) for r in ordered], columns=COLUMNS)
+
+
+def write_excel(results: list[ScoreResult], output_path: Path) -> Path:
+    """Write results to an Excel workbook sorted by score desc (Step 14)."""
+    df = to_dataframe(results)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Shortlist")
+        _autofit(writer, df, "Shortlist")
+
+    logger.info("Wrote Excel report (%d rows) -> %s", len(df), output_path)
+    return output_path
+
+
+def _autofit(writer: pd.ExcelWriter, df: pd.DataFrame, sheet: str) -> None:
+    """Best-effort column width auto-fit for readability."""
+    try:
+        worksheet = writer.sheets[sheet]
+        for idx, col in enumerate(df.columns, start=1):
+            # Cap width so long remark/url cells don't blow out the layout.
+            max_len = max(
+                len(str(col)),
+                *(len(str(v)[:60]) for v in df[col].astype(str).tolist()),
+            ) if len(df) else len(str(col))
+            worksheet.column_dimensions[
+                worksheet.cell(row=1, column=idx).column_letter
+            ].width = min(max_len + 2, 50)
+    except Exception as exc:  # noqa: BLE001 - formatting is non-critical
+        logger.debug("Column autofit skipped: %s", exc)
