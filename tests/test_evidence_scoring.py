@@ -37,6 +37,72 @@ class EvidenceScoringTests(unittest.TestCase):
         report = match_resume(resume, JDSpec(required=["Django"], search_modes={"Django": "project"}), self.kb)
         self.assertEqual(report.matches, [])
 
+    def test_experience_mode_isolated_from_skills_and_projects(self):
+        resume = parse_resume("Skills\nn8n\nProjects\nReact Dashboard\nExperience\nWorked with Python.")
+        enrich_projects(resume.project_list, self.kb)
+
+        experience = match_resume(
+            resume, JDSpec(required=["n8n"], search_modes={"n8n": "experience"}), self.kb
+        )
+        python = match_resume(
+            resume, JDSpec(required=["Python"], search_modes={"Python": "experience"}), self.kb
+        )
+        react = match_resume(
+            resume, JDSpec(required=["React"], search_modes={"React": "experience"}), self.kb
+        )
+        self.assertEqual(experience.matches, [])
+        self.assertEqual(python.matches[0].match_type, "experience")
+        self.assertEqual(react.matches, [])
+
+    def test_whole_resume_mode_searches_all_resume_text(self):
+        resume = parse_resume("Skills\nPython\nProjects\nReact Dashboard\nExperience\nWorked with n8n.")
+        report = match_resume(
+            resume,
+            JDSpec(required=["n8n"], search_modes={"n8n": "whole_resume"}),
+            self.kb,
+        )
+        self.assertEqual(report.matches[0].match_type, "whole_resume")
+        self.assertEqual(report.matched_in["n8n"], ["Whole Resume"])
+
+    def test_whole_resume_mode_returns_no_match_when_keyword_is_absent(self):
+        resume = parse_resume("Skills\nPython\nProjects\nReact Dashboard\nExperience\nWorked with Java.")
+        report = match_resume(
+            resume,
+            JDSpec(required=["n8n"], search_modes={"n8n": "whole_resume"}),
+            self.kb,
+        )
+        self.assertEqual(report.matches, [])
+
+    def test_discovery_matches_do_not_affect_score(self):
+        resume = parse_resume("Skills\nPython\nProjects\nReact Dashboard\nExperience\nWorked with n8n.")
+        candidate = Candidate(name="A")
+        for mode in ("experience", "whole_resume"):
+            with self.subTest(mode=mode):
+                jd = JDSpec(required=["n8n"], search_modes={"n8n": mode})
+                report = match_resume(resume, jd, self.kb)
+                result = score_candidate(
+                    candidate, resume, jd, report, GithubStatus.NONE, [], github_checked=False
+                )
+                self.assertEqual(result.score, 0.0)
+                self.assertEqual(result.recommendation, "Reject")
+
+    def test_discovery_and_scoring_evidence_can_coexist(self):
+        resume = parse_resume(
+            "Skills\nPython\nProjects\nReact Dashboard\nExperience\nWorked with n8n."
+        )
+        jd = JDSpec(
+            required=["Python", "n8n"],
+            search_modes={"Python": "skills", "n8n": "whole_resume"},
+        )
+        report = match_resume(resume, jd, self.kb)
+        result = score_candidate(
+            Candidate(name="A"), resume, jd, report, GithubStatus.NONE, [], github_checked=False
+        )
+        evidence = {item.skill: item for item in result.keyword_evidence}
+        self.assertEqual(evidence["Python"].match_type, "skills")
+        self.assertEqual(evidence["n8n"].match_type, "whole_resume")
+        self.assertEqual(result.score, 20.0)
+
 
 if __name__ == "__main__":
     unittest.main()

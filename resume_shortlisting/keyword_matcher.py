@@ -7,6 +7,8 @@ from .skills_kb import SkillsKB, load_kb
 
 SECTION_SKILLS = "Skills"
 SECTION_PROJECTS = "Projects"
+SECTION_EXPERIENCE = "Experience"
+SECTION_WHOLE_RESUME = "Whole Resume"
 
 
 class MatchReport:
@@ -17,7 +19,13 @@ class MatchReport:
     def matched_skills(self): return [m.skill for m in self.matches]
     @property
     def matched_in(self):
-        return {m.skill: [SECTION_PROJECTS] if m.match_type == "project" else [SECTION_SKILLS] for m in self.matches}
+        sections = {
+            "project": SECTION_PROJECTS,
+            "skills": SECTION_SKILLS,
+            "experience": SECTION_EXPERIENCE,
+            "whole_resume": SECTION_WHOLE_RESUME,
+        }
+        return {m.skill: [sections[m.match_type]] for m in self.matches}
     @property
     def missing_skills(self):
         found = {m.skill.lower() for m in self.matches}
@@ -42,6 +50,16 @@ def _project_match(skill: str, resume: ParsedResume, kb: SkillsKB, required: boo
 
 def _match_one(skill, required, resume, kb, mode):
     canonical = kb.canonical_of(skill) or skill
+    if mode == "experience":
+        if kb.skill_in_text(canonical, resume.experience):
+            return SkillMatch(skill=canonical, is_required=required, match_type="experience",
+                              source="experience", matched_text=resume.experience[:300])
+        return None
+    if mode == "whole_resume":
+        if kb.skill_in_text(canonical, resume.raw_text):
+            return SkillMatch(skill=canonical, is_required=required, match_type="whole_resume",
+                              source="whole_resume", matched_text=resume.raw_text[:300])
+        return None
     project = _project_match(canonical, resume, kb, required)
     skills = kb.skill_in_text(canonical, resume.skills)
     if mode in ("project", "skills_or_project") and project:

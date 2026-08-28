@@ -18,7 +18,7 @@ def _evidence_remarks(jd: JDSpec, evidence: list, score: float) -> str:
             continue
         if item.match_type == "skills":
             parts.append(f"{skill} found in Skills")
-        else:
+        elif item.match_type == "project":
             source = item.source.replace("_", " ") or "project"
             project = item.project_name or "an unnamed project"
             parts.append(f"{skill} demonstrated in {project} ({source})")
@@ -34,6 +34,10 @@ def _evidence_remarks(jd: JDSpec, evidence: list, score: float) -> str:
                     project_github.append("Project GitHub repository appears to be private and could not be independently verified")
             else:
                 project_github.append("No project GitHub repository was provided")
+        elif item.match_type == "experience":
+            parts.append(f"{skill} found in Experience (discovery only)")
+        elif item.match_type == "whole_resume":
+            parts.append(f"{skill} found in Whole Resume (discovery only)")
     if missing:
         parts.append(f"Missing required evidence: {', '.join(missing)}")
     # de-duplicate repeated GitHub wording when several keywords hit one project
@@ -56,10 +60,10 @@ def score_candidate(candidate: Candidate, resume: ParsedResume, jd: JDSpec, matc
         elif not github_checked: e.github_status = GithubStatus.NOT_CHECKED
         else: e.github_status = by_url.get(e.project_github_url.rstrip("/").lower(), GithubStatus.BROKEN)
         e.verified = e.github_status is GithubStatus.WORKING
-    required = [e for e in evidence if e.is_required]
+    required = [e for e in evidence if e.is_required and e.match_type in ("skills", "project")]
     earned = sum(20 if e.match_type == "project" else 10 for e in required)
     required_score = (earned / (20 * len(jd.required)) * w.required_component_max) if jd.required else 0
-    preferred = len([e for e in evidence if not e.is_required])
+    preferred = len([e for e in evidence if not e.is_required and e.match_type in ("skills", "project")])
     preferred_score = (preferred / len(jd.preferred) * w.preferred_component_max) if jd.preferred else 0
     relevant = [e for e in required if e.match_type == "project" and e.project_github_url]
     statuses = {e.github_status for e in relevant}

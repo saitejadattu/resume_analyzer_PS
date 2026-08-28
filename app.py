@@ -150,7 +150,24 @@ def _keyword_cell(result: ScoreResult, keyword: str) -> str:
         return "✅ Project"
     if "Skills" in sections:
         return "🟡 Skills"
+    if "Experience" in sections:
+        return "🔎 Experience"
+    if "Whole Resume" in sections:
+        return "🔎 Whole Resume"
     return "—"
+
+
+def _has_discovery_match(result: ScoreResult) -> bool:
+    """Return whether a result contains non-scoring discovery evidence."""
+    return any(
+        evidence.match_type in ("experience", "whole_resume")
+        for evidence in result.keyword_evidence
+    )
+
+
+def _result_sort_key(result: ScoreResult) -> tuple[bool, float]:
+    """Place discovery matches first, then preserve score ordering."""
+    return (_has_discovery_match(result), result.score if result.score is not None else -1)
 
 
 def _github_cell(result: ScoreResult) -> str:
@@ -165,7 +182,7 @@ def _github_cell(result: ScoreResult) -> str:
 def _keyword_matrix(results: list[ScoreResult], jd: JDSpec) -> pd.DataFrame:
     """Build the candidate × keyword grid (+ Score and GitHub columns)."""
     rows = []
-    for r in sorted(results, key=lambda x: x.score if x.score is not None else -1, reverse=True):
+    for r in sorted(results, key=_result_sort_key, reverse=True):
         row = {"Candidate": r.candidate.display_name, "Score": round(r.score) if r.score is not None else "N/A"}
         for kw in jd.required:
             row[kw] = _keyword_cell(r, kw)
@@ -184,7 +201,13 @@ def _render_candidate_detail(r: ScoreResult, jd: JDSpec) -> None:
     rows = []
     for kw in jd.required:
         e = evidence.get(kw)
-        rows.append({"Keyword": kw, "Match": "❌ Missing" if not e else ("✅ Project" if e.match_type == "project" else "🟡 Skills"),
+        match_labels = {
+            "project": "✅ Project",
+            "skills": "🟡 Skills",
+            "experience": "🔎 Experience",
+            "whole_resume": "🔎 Whole Resume",
+        }
+        rows.append({"Keyword": kw, "Match": "❌ Missing" if not e else match_labels[e.match_type],
                      "Project": e.project_name if e else "", "Source": e.source if e else "",
                      "Project GitHub": e.project_github_url if e else "", "GitHub status": e.github_status.value if e else "",
                      "Verified": "Yes" if e and e.verified else "No"})
@@ -197,7 +220,7 @@ def _render_candidate_detail(r: ScoreResult, jd: JDSpec) -> None:
         for kw in jd.preferred:
             sections = r.matched_in.get(kw, [])
             if sections:
-                where = "Projects" if "Projects" in sections else "Skills"
+                where = next((section for section in ("Projects", "Skills", "Experience", "Whole Resume") if section in sections), "")
                 pbadges.append(f":green-background[➕ {kw} · {where}]")
             else:
                 pbadges.append(f":gray-background[{kw} · missing]")
@@ -338,8 +361,15 @@ if required_all or preferred_all:
         st.caption("Project requires project evidence; Skills only accepts the Skills section; Skills or Project prefers project evidence.")
         for keyword in jd_preview.required:
             search_modes[keyword] = st.selectbox(
-                keyword, ["skills", "project", "skills_or_project"],
-                index=["skills", "project", "skills_or_project"].index(jd_preview.search_mode_for(keyword)),
+                keyword, ["skills", "project", "skills_or_project", "experience", "whole_resume"],
+                format_func=lambda mode: {
+                    "skills": "Skills",
+                    "project": "Projects",
+                    "skills_or_project": "Skills + Projects",
+                    "experience": "Experience",
+                    "whole_resume": "Whole Resume",
+                }[mode],
+                index=["skills", "project", "skills_or_project", "experience", "whole_resume"].index(jd_preview.search_mode_for(keyword)),
                 key=f"search_mode_{keyword}",
             )
 
@@ -471,7 +501,7 @@ if outcome is not None:
 
     displayed_results = [
         r for r in results
-        if (r.recommendation in categories or (r.recommendation == "N/A" and "Not Evaluated" in categories))
+        if (_has_discovery_match(r) or r.recommendation in categories or (r.recommendation == "N/A" and "Not Evaluated" in categories))
         and matches_filters(r)
     ]
     st.caption(f"Showing {len(displayed_results)} of {len(results)} processed candidates.")
@@ -498,7 +528,7 @@ if outcome is not None:
     # ---- Per-candidate visual detail -------------------------------------
     st.subheader("🧑‍💻 Candidate details")
     st.caption("Expand a candidate to see exactly where each keyword matched.")
-    for r in sorted(displayed_results, key=lambda x: x.score if x.score is not None else -1, reverse=True):
+    for r in sorted(displayed_results, key=_result_sort_key, reverse=True):
         gh = _github_cell(r)
         with st.expander(
             f"{r.candidate.display_name}  —  "
