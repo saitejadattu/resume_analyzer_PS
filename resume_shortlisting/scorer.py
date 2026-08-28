@@ -66,7 +66,7 @@ def score_candidate(candidate: Candidate, resume: ParsedResume, jd: JDSpec, matc
     github_score = w.project_github_max if GithubStatus.WORKING in statuses else (w.project_github_unchecked if GithubStatus.NOT_CHECKED in statuses else 0)
     score = max(w.min_score, min(w.max_score, required_score + preferred_score + github_score))
     breakdown = {"required_keywords": round(required_score, 1), "preferred_keywords": round(preferred_score, 1), "project_github": github_score}
-    return ScoreResult(candidate=candidate, score=score, recommendation=settings.bands.classify(score),
+    return ScoreResult(candidate=candidate, score=score, recommendation=settings.bands.classify(score), processing_status="Analyzed",
       matched_skills=match.matched_skills, matched_in=match.matched_in, missing_skills=match.missing_skills,
       keyword_evidence=evidence, candidate_github_urls=resume.candidate_github_urls,
       project_technologies=[t for p in resume.project_list for t in p.technologies],

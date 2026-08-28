@@ -144,8 +144,10 @@ class ScoreResult(BaseModel):
 
     candidate: Candidate
 
-    score: float = 0.0
+    score: float | None = 0.0
     recommendation: str = "Reject"
+    processing_status: str = "Analyzed"
+    failure_reason: str = ""
 
     matched_skills: list[str] = Field(default_factory=list)
     # skill -> ["Skills", "Projects"]
@@ -180,7 +182,7 @@ class ScoreResult(BaseModel):
             "student": self.candidate.display_name,
             "email": self.candidate.email,
             "resume_url": self.candidate.resume_url,
-            "score": round(self.score, 1),
+            "score": round(self.score, 1) if self.score is not None else None,
             "matched_skills": self.matched_skills,
             "keyword_evidence": [e.model_dump(mode="json") for e in self.keyword_evidence],
             "candidate_github_urls": self.candidate_github_urls,
@@ -203,6 +205,8 @@ class ScoreResult(BaseModel):
             ],
             "missing_skills": self.missing_skills,
             "recommendation": self.recommendation,
+            "processing_status": self.processing_status,
+            "failure_reason": self.failure_reason,
             "remarks": self.remarks,
             "score_breakdown": self.score_breakdown,
         }

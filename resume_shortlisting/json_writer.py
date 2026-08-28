@@ -13,7 +13,7 @@ logger = get_logger("json_writer")
 
 def write_json(results: list[ScoreResult], output_path: Path) -> Path:
     """Write a JSON report, best-scored candidate first (Step 15)."""
-    ordered = sorted(results, key=lambda r: r.score, reverse=True)
+    ordered = sorted(results, key=lambda r: r.score if r.score is not None else -1, reverse=True)
     payload = {
         "total_candidates": len(ordered),
         "shortlisted": sum(

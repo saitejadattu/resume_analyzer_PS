@@ -24,12 +24,16 @@ from .utils import get_logger
 logger = get_logger("pipeline")
 
 
-def _failed_result(candidate: Candidate, jd: JDSpec, reason: str) -> ScoreResult:
+def _failed_result(
+    candidate: Candidate, jd: JDSpec, reason: str, *, status: str = "Processing Failed"
+) -> ScoreResult:
     """Build a zero-ish result for a candidate we could not process."""
     return ScoreResult(
         candidate=candidate,
-        score=0.0,
-        recommendation="Reject",
+        score=None,
+        recommendation="N/A",
+        processing_status=status,
+        failure_reason=reason,
         missing_skills=jd.all_skills(),
         github_status=GithubStatus.NONE,
         remarks=f"Not processed: {reason}",
@@ -51,14 +55,20 @@ def process_candidate(
         if not download.ok or download.path is None:
             logger.info("[%s] Skipping — resume unavailable", candidate.display_name)
             return _failed_result(
-                candidate, jd, download.error or "resume download failed"
+                candidate,
+                jd,
+                download.error or "resume download failed",
+                status="Download Failed",
             )
 
         # Step 3: extract text.
         text = extract_text(candidate, download.path)
         if not text:
             return _failed_result(
-                candidate, jd, "could not extract text (empty/scanned PDF)"
+                candidate,
+                jd,
+                "could not extract text (empty/scanned PDF)",
+                status="Analysis Failed",
             )
 
         # Step 4 + 9 + 11: parse sections, projects, github urls.
@@ -99,7 +109,9 @@ def process_candidate(
         )
     except Exception as exc:  # noqa: BLE001 - resilience: never crash the run
         logger.exception("[%s] Unexpected processing error", candidate.display_name)
-        return _failed_result(candidate, jd, f"{type(exc).__name__}: {exc}")
+        return _failed_result(
+            candidate, jd, f"{type(exc).__name__}: {exc}", status="Analysis Failed"
+        )
 
 
 def process_all(
@@ -151,7 +163,11 @@ def process_all(
                 results.append(future.result())
             except Exception as exc:  # noqa: BLE001 - defensive
                 logger.error("[%s] Worker crashed: %s", cand.display_name, exc)
-                results.append(_failed_result(cand, jd, f"worker crash: {exc}"))
+                results.append(
+                    _failed_result(
+                        cand, jd, f"worker crash: {exc}", status="Processing Failed"
+                    )
+                )
             done += 1
             if on_progress is not None:
                 on_progress(done, total)

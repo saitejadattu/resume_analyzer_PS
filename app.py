@@ -165,8 +165,8 @@ def _github_cell(result: ScoreResult) -> str:
 def _keyword_matrix(results: list[ScoreResult], jd: JDSpec) -> pd.DataFrame:
     """Build the candidate × keyword grid (+ Score and GitHub columns)."""
     rows = []
-    for r in sorted(results, key=lambda x: x.score, reverse=True):
-        row = {"Candidate": r.candidate.display_name, "Score": round(r.score)}
+    for r in sorted(results, key=lambda x: x.score if x.score is not None else -1, reverse=True):
+        row = {"Candidate": r.candidate.display_name, "Score": round(r.score) if r.score is not None else "N/A"}
         for kw in jd.required:
             row[kw] = _keyword_cell(r, kw)
         row["GitHub"] = _github_cell(r)
@@ -446,8 +446,8 @@ if outcome is not None:
     st.subheader("Result filters")
     categories = st.multiselect(
         "Recommendation categories",
-        ["Strong Shortlist", "Shortlist", "Consider", "Reject"],
-        default=["Strong Shortlist", "Shortlist", "Consider", "Reject"],
+        ["Strong Shortlist", "Shortlist", "Consider", "Reject", "Not Evaluated"],
+        default=["Strong Shortlist", "Shortlist", "Consider", "Reject", "Not Evaluated"],
         key="result_status_filter",
     )
     evidence_filters = st.multiselect(
@@ -469,7 +469,11 @@ if outcome is not None:
         }
         return not evidence_filters or all(flags[name] for name in evidence_filters)
 
-    displayed_results = [r for r in results if r.recommendation in categories and matches_filters(r)]
+    displayed_results = [
+        r for r in results
+        if (r.recommendation in categories or (r.recommendation == "N/A" and "Not Evaluated" in categories))
+        and matches_filters(r)
+    ]
     st.caption(f"Showing {len(displayed_results)} of {len(results)} processed candidates.")
 
     # ---- Match matrix (candidate × keyword, at a glance) ------------------
@@ -494,11 +498,12 @@ if outcome is not None:
     # ---- Per-candidate visual detail -------------------------------------
     st.subheader("🧑‍💻 Candidate details")
     st.caption("Expand a candidate to see exactly where each keyword matched.")
-    for r in sorted(displayed_results, key=lambda x: x.score, reverse=True):
+    for r in sorted(displayed_results, key=lambda x: x.score if x.score is not None else -1, reverse=True):
         gh = _github_cell(r)
         with st.expander(
-            f"{r.candidate.display_name}  —  {round(r.score)}/100  ·  "
-            f"{r.recommendation}  ·  GitHub {gh}"
+            f"{r.candidate.display_name}  —  "
+            f"{round(r.score) if r.score is not None else 'N/A'}/100  ·  "
+            f"{r.processing_status}  ·  {r.recommendation}  ·  GitHub {gh}"
         ):
             _render_candidate_detail(r, outcome.jd)
             path = profile_path(r)

@@ -80,6 +80,8 @@ COLUMNS: list[str] = [
     "GitHub URLs",
     "Matching Score",
     "Recommendation",
+    "Processing Status",
+    "Failure Reason",
     "Missing Skills",
     "Remarks",
     "Score Breakdown",
@@ -95,6 +97,8 @@ FINAL_COLUMNS = [
 
 def final_status(result: ScoreResult) -> str:
     """User-facing final-sheet status, derived from the scored recommendation."""
+    if result.processing_status != "Analyzed":
+        return result.processing_status
     return "Rejected" if result.recommendation == "Reject" else result.recommendation
 
 
@@ -114,8 +118,10 @@ def _row(result: ScoreResult) -> dict[str, object]:
         "GitHub Found": "Yes" if result.github_found else "No",
         "GitHub Working": "Yes" if result.github_working else "No",
         "GitHub URLs": "\n".join(result.github_urls),
-        "Matching Score": round(result.score, 1),
+        "Matching Score": round(result.score, 1) if result.score is not None else "N/A",
         "Recommendation": result.recommendation,
+        "Processing Status": result.processing_status,
+        "Failure Reason": result.failure_reason,
         "Missing Skills": ", ".join(result.missing_skills),
         "Remarks": result.remarks,
         "Score Breakdown": "; ".join(f"{key}: {value}" for key, value in result.score_breakdown.items()),
@@ -131,7 +137,7 @@ def _row(result: ScoreResult) -> dict[str, object]:
 
 def to_dataframe(results: list[ScoreResult]) -> pd.DataFrame:
     """Flatten results into a score-sorted dataframe (shared by Excel + UI)."""
-    ordered = sorted(results, key=lambda r: r.score, reverse=True)
+    ordered = sorted(results, key=lambda r: r.score if r.score is not None else -1, reverse=True)
     return pd.DataFrame([_row(r) for r in ordered], columns=COLUMNS)
 
 
@@ -159,7 +165,7 @@ def to_final_candidate_dataframe(results: list[ScoreResult]) -> pd.DataFrame:
             }
         row = {column: source.get(column, "") for column in source_columns}
         row.update({
-            "Score": round(result.score, 1),
+            "Score": round(result.score, 1) if result.score is not None else "N/A",
             "Status": final_status(result),
             "Remarks": result.remarks,
             "Required Keywords Matched": ", ".join(

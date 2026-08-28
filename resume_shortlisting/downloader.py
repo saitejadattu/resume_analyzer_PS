@@ -13,7 +13,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 import re
 
 import requests
@@ -32,6 +32,20 @@ from .utils import get_logger, is_valid_url, resume_cache_path
 logger = get_logger("downloader")
 
 _GOOGLE_DRIVE_FILE_RE = re.compile(r"drive\.google\.com/file/d/([^/?#]+)", re.IGNORECASE)
+
+
+def _google_drive_file_id(url: str) -> str | None:
+    """Extract a Drive file ID from the supported public URL forms."""
+    match = _GOOGLE_DRIVE_FILE_RE.search(url)
+    if match:
+        return match.group(1)
+
+    parsed = urlparse(url)
+    if parsed.netloc.casefold() not in {"drive.google.com", "www.drive.google.com"}:
+        return None
+    if parsed.path.casefold() not in {"/open", "/uc"}:
+        return None
+    return parse_qs(parsed.query).get("id", [None])[0]
 
 # Transient errors worth retrying (timeouts, connection resets). HTTP 4xx like
 # 404 are NOT retried — they are permanent and raised as PermanentDownloadError.
@@ -91,9 +105,9 @@ def _download_once(url: str, timeout: int) -> requests.Response:
     # Google Drive share pages are HTML, not resume files. Convert the common
     # public ``/file/d/<id>/view`` form to its download endpoint while leaving
     # every other source URL untouched.
-    match = _GOOGLE_DRIVE_FILE_RE.search(url)
-    if match:
-        url = f"https://drive.usercontent.google.com/download?id={match.group(1)}&export=download&confirm=t"
+    file_id = _google_drive_file_id(url)
+    if file_id:
+        url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
     resp = requests.get(
         url,
         timeout=timeout,
@@ -153,7 +167,12 @@ def download_resume(candidate: Candidate, settings: config.Settings) -> Download
             dest = resume_cache_path(url, candidate.name, detected_suffix)
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else "?"
-        msg = f"HTTP {status} downloading resume"
+        detail = {
+            403: "file inaccessible or permission denied",
+            404: "file not found",
+            429: "rate limited",
+        }.get(status, "downloading resume")
+        msg = f"HTTP {status}: {detail}"
         logger.warning("[%s] %s: %s", candidate.display_name, msg, url)
         return DownloadResult(candidate, None, ok=False, error=msg)
     except PermanentDownloadError as exc:
