@@ -466,7 +466,41 @@ if outcome is not None:
         st.info("Configuration changed. Click Run shortlisting to process with the new settings; displayed results are from the previous run.")
 
     # ---- Summary metrics --------------------------------------------------
-    st.success(f"Processed {len(results)} candidate(s).")
+    # Processing status counts
+    # Keep this compatible even if RunResult does not expose status_counts.
+    status_counts = getattr(outcome, "status_counts", None)
+
+    if status_counts is None:
+        status_counts = {}
+
+        for result in outcome.results:
+            status = getattr(result, "processing_status", "Analyzed")
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+    analyzed_count = status_counts.get("Analyzed", 0)
+
+    download_access_failed = (
+        status_counts.get("Download Failed", 0)
+        + status_counts.get("Access Denied", 0)
+    )
+
+    extraction_analysis_failed = (
+        status_counts.get("Extraction Failed", 0)
+        + status_counts.get("Analysis Failed", 0)
+    )
+
+    st.success(
+        f"Total candidates: {len(outcome.results)} · "
+        f"Analyzed: {analyzed_count} · "
+        f"Download/access failed: {download_access_failed} · "
+        f"Extraction/analysis failed: {extraction_analysis_failed}"
+    )
+    analyzed_count = status_counts.get("Analyzed", 0)
+    st.success(
+        f"Total candidates: {len(results)} · Analyzed: {analyzed_count} · "
+        f"Download/access failed: {status_counts.get('Download Failed', 0) + status_counts.get('Access Denied', 0)} · "
+        f"Extraction/analysis failed: {status_counts.get('Extraction Failed', 0) + status_counts.get('Analysis Failed', 0)}"
+    )
     m = st.columns(4)
     for col, band in zip(
         m, ["Strong Shortlist", "Shortlist", "Consider", "Reject"]

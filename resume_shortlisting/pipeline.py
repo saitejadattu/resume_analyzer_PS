@@ -24,6 +24,14 @@ from .utils import get_logger
 logger = get_logger("pipeline")
 
 
+def _download_status(error: str) -> str:
+    """Classify permission failures separately from other download errors."""
+    lowered = error.casefold()
+    if "http 403" in lowered or "permission" in lowered or "access denied" in lowered:
+        return "Access Denied"
+    return "Download Failed"
+
+
 def _failed_result(
     candidate: Candidate, jd: JDSpec, reason: str, *, status: str = "Processing Failed"
 ) -> ScoreResult:
@@ -58,7 +66,7 @@ def process_candidate(
                 candidate,
                 jd,
                 download.error or "resume download failed",
-                status="Download Failed",
+                status=_download_status(download.error or "resume download failed"),
             )
 
         # Step 3: extract text.
@@ -68,7 +76,7 @@ def process_candidate(
                 candidate,
                 jd,
                 "could not extract text (empty/scanned PDF)",
-                status="Analysis Failed",
+                status="Extraction Failed",
             )
 
         # Step 4 + 9 + 11: parse sections, projects, github urls.

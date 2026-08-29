@@ -83,6 +83,7 @@ class RunResult:
     excel_path: Path | None = None
     json_path: Path | None = None
     stats: dict[str, int] = field(default_factory=dict)
+    status_counts: dict[str, int] = field(default_factory=dict)
 
 
 def resolve_jd(
@@ -144,8 +145,11 @@ def run_shortlisting(
         json_path = write_json(results, json_out or config.DEFAULT_JSON_OUTPUT)
 
     stats: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
     for r in results:
-        stats[r.recommendation] = stats.get(r.recommendation, 0) + 1
+        status_counts[r.processing_status] = status_counts.get(r.processing_status, 0) + 1
+        if r.processing_status == "Analyzed":
+            stats[r.recommendation] = stats.get(r.recommendation, 0) + 1
 
     return RunResult(
         results=results,
@@ -153,4 +157,5 @@ def run_shortlisting(
         excel_path=excel_path,
         json_path=json_path,
         stats=stats,
+        status_counts=status_counts,
     )
