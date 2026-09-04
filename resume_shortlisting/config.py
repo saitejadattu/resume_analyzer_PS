@@ -104,6 +104,12 @@ GITHUB_TOKEN: str | None = os.getenv("GITHUB_TOKEN") or None
 
 
 # --------------------------------------------------------------------------- #
+# Coding-profile evidence (information only, never scored)
+# --------------------------------------------------------------------------- #
+CODING_PROFILE_TIMEOUT: int = int(os.getenv("RS_CODING_PROFILE_TIMEOUT", "15"))
+
+
+# --------------------------------------------------------------------------- #
 # Scoring weights (Step 12) — fully configurable
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)

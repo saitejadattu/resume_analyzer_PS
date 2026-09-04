@@ -10,6 +10,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import config
+from .coding_profiles import discover_coding_profiles
 from .downloader import DownloadResult
 from .github_checker import summarize, validate_urls
 from .keyword_matcher import match_resume
@@ -56,6 +57,7 @@ def process_candidate(
     settings: config.Settings,
     *,
     check_github: bool = True,
+    fetch_coding_stats: bool = False,
 ) -> ScoreResult:
     """Run the full per-candidate pipeline (Steps 3-13)."""
     try:
@@ -103,7 +105,7 @@ def process_candidate(
             github_checked = True
 
         # Steps 12-13: score + recommend.
-        return score_candidate(
+        result = score_candidate(
             candidate,
             resume,
             jd,
@@ -115,6 +117,20 @@ def process_candidate(
             settings=settings,
             kb=kb,
         )
+
+        # Coding-profile evidence is attached *after* scoring, so it can never
+        # influence the score, the breakdown, or the recommendation band.
+        try:
+            result.coding_profiles = discover_coding_profiles(
+                candidate, resume.raw_text, fetch_public_stats=fetch_coding_stats
+            )
+        except Exception as exc:  # noqa: BLE001 - evidence must never fail a run
+            logger.warning(
+                "[%s] Coding-profile discovery skipped: %s",
+                candidate.display_name,
+                exc,
+            )
+        return result
     except Exception as exc:  # noqa: BLE001 - resilience: never crash the run
         logger.exception("[%s] Unexpected processing error", candidate.display_name)
         return _failed_result(
@@ -130,6 +146,7 @@ def process_all(
     settings: config.Settings,
     *,
     check_github: bool = True,
+    fetch_coding_stats: bool = False,
     on_progress=None,
 ) -> list[ScoreResult]:
     """Process every candidate concurrently and return all results (Step 21).
@@ -161,6 +178,7 @@ def process_all(
                     kb,
                     settings,
                     check_github=check_github,
+                    fetch_coding_stats=fetch_coding_stats,
                 )
             ] = cand
 

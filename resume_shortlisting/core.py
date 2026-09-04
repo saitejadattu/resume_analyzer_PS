@@ -109,6 +109,7 @@ def run_shortlisting(
     settings: config.Settings | None = None,
     kb: SkillsKB | None = None,
     check_github: bool = True,
+    fetch_coding_stats: bool = False,
     limit: int = 0,
     write_outputs: bool = True,
     excel_out: Path | None = None,
@@ -136,6 +137,7 @@ def run_shortlisting(
         kb,
         settings,
         check_github=check_github,
+        fetch_coding_stats=fetch_coding_stats,
         on_progress=process_progress,
     )
 

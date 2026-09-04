@@ -31,6 +31,30 @@ class GithubKind(str, Enum):
     UNKNOWN = "unknown"
 
 
+# Coding platforms surfaced as recruiter-facing evidence. Order is display order.
+CODING_PLATFORMS: tuple[str, ...] = ("leetcode", "codechef", "codeforces")
+
+
+class CodingProfile(BaseModel):
+    """A public coding-platform profile and its published statistics.
+
+    Information only: this never contributes to the score or recommendation.
+    Unknown statistics stay ``None`` rather than defaulting to zero, so the UI
+    can distinguish "not published" from "solved nothing".
+    """
+
+    platform: str
+    profile_url: str = ""
+    profile_found: bool = False
+    problems_solved: int | None = None
+    rating: int | None = None
+    # Where the link came from: "spreadsheet" or "resume" (empty when absent).
+    source: str = ""
+    handle: str = ""
+    # Human-readable reason when a profile or its statistics are unavailable.
+    status: str = ""
+
+
 class Candidate(BaseModel):
     """A single row read from the source sheet (Step 1)."""
 
@@ -171,6 +195,10 @@ class ScoreResult(BaseModel):
     # Full parsed projects (name, technologies, links) for the visual detail.
     projects: list[Project] = Field(default_factory=list)
 
+    # Public coding-platform evidence (platform -> profile). Display only:
+    # never read by the scorer or the recommendation bands.
+    coding_profiles: dict[str, CodingProfile] = Field(default_factory=dict)
+
     # Human-readable explanation of the score / any processing failures.
     remarks: str = ""
     # Itemised score breakdown for transparency/debugging.
@@ -203,6 +231,10 @@ class ScoreResult(BaseModel):
                 }
                 for p in self.projects
             ],
+            "coding_profiles": {
+                name: profile.model_dump(mode="json")
+                for name, profile in self.coding_profiles.items()
+            },
             "missing_skills": self.missing_skills,
             "recommendation": self.recommendation,
             "processing_status": self.processing_status,

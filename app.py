@@ -23,8 +23,9 @@ from resume_shortlisting.core import (
     parse_keyword_string,
     run_shortlisting,
 )
+from resume_shortlisting.coding_profiles import PLATFORM_LABELS
 from resume_shortlisting.excel_writer import to_dataframe
-from resume_shortlisting.models import GithubStatus, JDSpec, ScoreResult
+from resume_shortlisting.models import CODING_PLATFORMS, GithubStatus, JDSpec, ScoreResult
 from resume_shortlisting.skills_kb import load_kb
 from resume_shortlisting.sources import ExcelSource, GoogleSheetSource, TalentPoolSource
 from resume_shortlisting.profile_exports import profile_name, profile_path, profiles_zip
@@ -179,16 +180,68 @@ def _github_cell(result: ScoreResult) -> str:
     return _GH_MATRIX_CELL.get(result.github_status, "❓")
 
 
+_CODING_SHORT = {"leetcode": "LC", "codechef": "CC", "codeforces": "CF"}
+
+
+def _coding_cell(result: ScoreResult) -> str:
+    """Compact matrix indicator, e.g. "LC: 347 · CF: 1248". Never scored."""
+    parts = []
+    for platform in CODING_PLATFORMS:
+        profile = result.coding_profiles.get(platform)
+        if profile is None or not profile.profile_found:
+            continue
+        label = _CODING_SHORT[platform]
+        if profile.problems_solved is not None:
+            parts.append(f"{label}: {profile.problems_solved}")
+        elif profile.rating is not None:
+            parts.append(f"{label}: {profile.rating}")
+        else:
+            parts.append(f"{label}: 🔗")
+    return " · ".join(parts) or "—"
+
+
 def _keyword_matrix(results: list[ScoreResult], jd: JDSpec) -> pd.DataFrame:
     """Build the candidate × keyword grid (+ Score and GitHub columns)."""
+    # Optional, purely informational column; omitted when nobody has a profile.
+    show_coding = any(
+        profile.profile_found
+        for r in results
+        for profile in r.coding_profiles.values()
+    )
     rows = []
     for r in sorted(results, key=_result_sort_key, reverse=True):
         row = {"Candidate": r.candidate.display_name, "Score": round(r.score) if r.score is not None else "N/A"}
         for kw in jd.required:
             row[kw] = _keyword_cell(r, kw)
         row["GitHub"] = _github_cell(r)
+        if show_coding:
+            row["Coding"] = _coding_cell(r)
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _render_coding_profiles(r: ScoreResult) -> None:
+    """Public coding-platform evidence. Informational only — never scored."""
+    st.markdown("**👨‍💻 Coding Profiles**")
+    for platform in CODING_PLATFORMS:
+        label = PLATFORM_LABELS[platform]
+        profile = r.coding_profiles.get(platform)
+        if profile is None or not profile.profile_found:
+            reason = (profile.status if profile else "") or "No public profile link found"
+            st.markdown(f"▫️ **{label}** — :gray[Not found · {reason}]")
+            continue
+        line = f"✅ **{label}** — [🔗 Profile]({profile.profile_url})"
+        stats = []
+        if profile.problems_solved is not None:
+            stats.append(f"Problems Solved: **{profile.problems_solved}**")
+        if profile.rating is not None:
+            stats.append(f"Rating: **{profile.rating}**")
+        if stats:
+            line += " · " + " · ".join(stats)
+        else:
+            line += f" · :gray[{profile.status or 'Stats not available'}]"
+        st.markdown(line)
+    st.caption("Coding-profile evidence is informational and does not affect the score or recommendation.")
 
 
 def _render_candidate_detail(r: ScoreResult, jd: JDSpec) -> None:
@@ -240,6 +293,9 @@ def _render_candidate_detail(r: ScoreResult, jd: JDSpec) -> None:
                 f"- {emoji} [{link.url}]({link.url}) — "
                 f"**{link.status.value}** · {link.kind.value}"
             )
+
+    # --- Coding profiles (information only) --------------------------------
+    _render_coding_profiles(r)
 
     # --- Projects with detected technologies -------------------------------
     st.markdown("**Projects & detected technologies**")
@@ -297,6 +353,11 @@ check_github = not st.sidebar.checkbox(
     "Skip GitHub validation (faster)", value=True,
     help="GitHub is rate-limited to 60 req/hr without a token. Keep this on "
     "for large sheets.",
+)
+fetch_coding_stats = not st.sidebar.checkbox(
+    "Skip coding-profile stats (faster)", value=True,
+    help="Coding profiles are always detected from the sheet/resume. Turn this "
+    "off to also fetch public LeetCode/CodeChef/Codeforces statistics.",
 )
 limit = st.sidebar.number_input(
     "Limit candidates (0 = all)", min_value=0, value=0, step=10,
@@ -424,6 +485,7 @@ if run_clicked:
                 jd=jd,
                 kb=_kb(),
                 check_github=check_github,
+                fetch_coding_stats=fetch_coding_stats,
                 limit=int(limit),
                 write_outputs=True,
                 download_progress=on_download,
@@ -489,17 +551,24 @@ if outcome is not None:
         + status_counts.get("Analysis Failed", 0)
     )
 
+    whole_resume_matches = sum(
+        any(evidence.match_type == "whole_resume" for evidence in result.keyword_evidence)
+        for result in results
+    )
+    experience_matches = sum(
+        any(evidence.match_type == "experience" for evidence in result.keyword_evidence)
+        for result in results
+    )
+
     st.success(
         f"Total candidates: {len(outcome.results)} · "
         f"Analyzed: {analyzed_count} · "
         f"Download/access failed: {download_access_failed} · "
         f"Extraction/analysis failed: {extraction_analysis_failed}"
     )
-    analyzed_count = status_counts.get("Analyzed", 0)
-    st.success(
-        f"Total candidates: {len(results)} · Analyzed: {analyzed_count} · "
-        f"Download/access failed: {status_counts.get('Download Failed', 0) + status_counts.get('Access Denied', 0)} · "
-        f"Extraction/analysis failed: {status_counts.get('Extraction Failed', 0) + status_counts.get('Analysis Failed', 0)}"
+    st.caption(
+        f"Whole Resume matches: {whole_resume_matches} · "
+        f"Experience matches: {experience_matches}"
     )
     m = st.columns(4)
     for col, band in zip(
@@ -560,27 +629,28 @@ if outcome is not None:
     )
 
     # ---- Per-candidate visual detail -------------------------------------
-    st.subheader("🧑‍💻 Candidate details")
-    st.caption("Expand a candidate to see exactly where each keyword matched.")
-    for r in sorted(displayed_results, key=_result_sort_key, reverse=True):
-        gh = _github_cell(r)
-        with st.expander(
-            f"{r.candidate.display_name}  —  "
-            f"{round(r.score) if r.score is not None else 'N/A'}/100  ·  "
-            f"{r.processing_status}  ·  {r.recommendation}  ·  GitHub {gh}"
-        ):
-            _render_candidate_detail(r, outcome.jd)
-            path = profile_path(r)
-            if path:
-                st.download_button(
-                    "⬇️ Download Profile",
-                    path.read_bytes(),
-                    profile_name(r),
-                    key=f"download_profile_{_stored_candidate_id(r)}",
-                    width="stretch",
-                )
-            else:
-                st.caption("Original cached resume is unavailable for download.")
+    with st.expander("🧑‍💻 Candidate details", expanded=False):
+        st.caption("Expand a candidate to see exactly where each keyword matched.")
+        with st.container(height=620, border=False):
+            for result in sorted(displayed_results, key=_result_sort_key, reverse=True):
+                gh = _github_cell(result)
+                with st.expander(
+                    f"{result.candidate.display_name}  —  "
+                    f"{round(result.score) if result.score is not None else 'N/A'}/100  ·  "
+                    f"{result.processing_status}  ·  {result.recommendation}  ·  GitHub {gh}"
+                ):
+                    _render_candidate_detail(result, outcome.jd)
+                    path = profile_path(result)
+                    if path:
+                        st.download_button(
+                            "⬇️ Download Profile",
+                            path.read_bytes(),
+                            profile_name(result),
+                            key=f"download_profile_{_stored_candidate_id(result)}",
+                            width="stretch",
+                        )
+                    else:
+                        st.caption("Original cached resume is unavailable for download.")
 
     # ---- Full results table (all columns, sortable) ----------------------
     df = to_dataframe(results)
@@ -618,41 +688,42 @@ if outcome is not None:
         width="stretch",
     )
     st.caption("Direct Google Sheets writing is not configured; download the final XLSX or CSV and import it into Google Sheets.")
-    st.subheader("Profile downloads")
-    shown = displayed_results
-    selected_ids = st.session_state.setdefault("selected_candidate_ids", set())
-    selection_keys = [f"profile_{_stored_candidate_id(r)}" for r in shown]
-    all_selection_keys = [f"profile_{_stored_candidate_id(r)}" for r in results]
-    controls = st.columns(5)
-    if controls[0].button("Select All"):
-        for key, result in zip(selection_keys, shown):
-            st.session_state[key] = True
-            selected_ids.add(_stored_candidate_id(result))
-    if controls[1].button("Clear Selection"):
-        for key in all_selection_keys: st.session_state[key] = False
-        selected_ids.clear()
-    for col, label in zip(controls[2:], ["Strong Shortlist", "Shortlist", "Consider"]):
-        if col.button(f"Select {label}"):
-            for result in results:
-                key = f"profile_{_stored_candidate_id(result)}"
-                chosen = result.recommendation == label
-                st.session_state[key] = chosen
-                candidate_id = _stored_candidate_id(result)
-                if chosen:
+    with st.expander("Profile downloads", expanded=False):
+        selected_ids = st.session_state.setdefault("selected_candidate_ids", set())
+        shown = displayed_results
+        selection_keys = [f"profile_{_stored_candidate_id(r)}" for r in shown]
+        all_selection_keys = [f"profile_{_stored_candidate_id(r)}" for r in results]
+        controls = st.columns(5)
+        if controls[0].button("Select All"):
+            for key, result in zip(selection_keys, shown):
+                st.session_state[key] = True
+                selected_ids.add(_stored_candidate_id(result))
+        if controls[1].button("Clear Selection"):
+            for key in all_selection_keys: st.session_state[key] = False
+            selected_ids.clear()
+        for col, label in zip(controls[2:], ["Strong Shortlist", "Shortlist", "Consider"]):
+            if col.button(f"Select {label}"):
+                for result in results:
+                    key = f"profile_{_stored_candidate_id(result)}"
+                    chosen = result.recommendation == label
+                    st.session_state[key] = chosen
+                    candidate_id = _stored_candidate_id(result)
+                    if chosen:
+                        selected_ids.add(candidate_id)
+                    else:
+                        selected_ids.discard(candidate_id)
+        with st.container(height=420, border=False):
+            for i, r in enumerate(shown):
+                candidate_id = _stored_candidate_id(r)
+                st.session_state.setdefault(selection_keys[i], candidate_id in selected_ids)
+                if st.checkbox(f"{r.candidate.display_name} — {r.recommendation}", key=selection_keys[i]):
                     selected_ids.add(candidate_id)
                 else:
                     selected_ids.discard(candidate_id)
-    for i, r in enumerate(shown):
-        candidate_id = _stored_candidate_id(r)
-        st.session_state.setdefault(selection_keys[i], candidate_id in selected_ids)
-        if st.checkbox(f"{r.candidate.display_name} — {r.recommendation}", key=selection_keys[i]):
-            selected_ids.add(candidate_id)
-        else:
-            selected_ids.discard(candidate_id)
-    selected = [r for r in results if _stored_candidate_id(r) in selected_ids]
-    st.caption(f"{len(selected)} profiles selected")
-    st.download_button("⬇️ Download Selected Profiles", profiles_zip(selected) if selected else b"", "shortlisted_profiles.zip", "application/zip", disabled=not selected, width="stretch")
-    st.download_button("⬇️ Download Shortlist CSV", df.to_csv(index=False).encode("utf-8-sig"), "shortlist.csv", "text/csv", width="stretch")
+        selected = [r for r in results if _stored_candidate_id(r) in selected_ids]
+        st.caption(f"{len(selected)} profiles selected")
+        st.download_button("⬇️ Download Selected Profiles", profiles_zip(selected) if selected else b"", "shortlisted_profiles.zip", "application/zip", disabled=not selected, width="stretch")
+        st.download_button("⬇️ Download Shortlist CSV", df.to_csv(index=False).encode("utf-8-sig"), "shortlist.csv", "text/csv", width="stretch")
 else:
     st.caption(
         "Configure the source and keywords in the sidebar, then click "
