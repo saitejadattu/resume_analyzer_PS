@@ -15,6 +15,7 @@ import re
 
 import pandas as pd
 
+from .coding_profiles import TABLE_COLUMNS as CODING_COLUMNS, table_fields
 from .models import ScoreResult
 from .utils import get_logger
 
@@ -83,6 +84,7 @@ COLUMNS: list[str] = [
     "Processing Status",
     "Failure Reason",
     "Missing Skills",
+    *CODING_COLUMNS,
     "Remarks",
     "Score Breakdown",
     "Keyword Evidence",
@@ -123,6 +125,8 @@ def _row(result: ScoreResult) -> dict[str, object]:
         "Processing Status": result.processing_status,
         "Failure Reason": result.failure_reason,
         "Missing Skills": ", ".join(result.missing_skills),
+        # Solved count + profile URL per platform (informational, never scored).
+        **table_fields(result.coding_profiles),
         "Remarks": result.remarks,
         "Score Breakdown": "; ".join(f"{key}: {value}" for key, value in result.score_breakdown.items()),
         "Keyword Evidence": "; ".join(

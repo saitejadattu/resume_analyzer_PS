@@ -32,7 +32,7 @@ class GithubKind(str, Enum):
 
 
 # Coding platforms surfaced as recruiter-facing evidence. Order is display order.
-CODING_PLATFORMS: tuple[str, ...] = ("leetcode", "codechef", "codeforces")
+CODING_PLATFORMS: tuple[str, ...] = ("leetcode", "codeforces", "codechef")
 
 
 class CodingProfile(BaseModel):

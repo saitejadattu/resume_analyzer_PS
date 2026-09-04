@@ -23,9 +23,14 @@ from resume_shortlisting.core import (
     parse_keyword_string,
     run_shortlisting,
 )
-from resume_shortlisting.coding_profiles import PLATFORM_LABELS
+from resume_shortlisting.coding_profiles import (
+    TABLE_COLUMNS as CODING_COLUMNS,
+    PLATFORM_LABELS,
+    available_profiles,
+    stats_summary,
+)
 from resume_shortlisting.excel_writer import to_dataframe
-from resume_shortlisting.models import CODING_PLATFORMS, GithubStatus, JDSpec, ScoreResult
+from resume_shortlisting.models import GithubStatus, JDSpec, ScoreResult
 from resume_shortlisting.skills_kb import load_kb
 from resume_shortlisting.sources import ExcelSource, GoogleSheetSource, TalentPoolSource
 from resume_shortlisting.profile_exports import profile_name, profile_path, profiles_zip
@@ -180,42 +185,18 @@ def _github_cell(result: ScoreResult) -> str:
     return _GH_MATRIX_CELL.get(result.github_status, "❓")
 
 
-_CODING_SHORT = {"leetcode": "LC", "codechef": "CC", "codeforces": "CF"}
-
-
-def _coding_cell(result: ScoreResult) -> str:
-    """Compact matrix indicator, e.g. "LC: 347 · CF: 1248". Never scored."""
-    parts = []
-    for platform in CODING_PLATFORMS:
-        profile = result.coding_profiles.get(platform)
-        if profile is None or not profile.profile_found:
-            continue
-        label = _CODING_SHORT[platform]
-        if profile.problems_solved is not None:
-            parts.append(f"{label}: {profile.problems_solved}")
-        elif profile.rating is not None:
-            parts.append(f"{label}: {profile.rating}")
-        else:
-            parts.append(f"{label}: 🔗")
-    return " · ".join(parts) or "—"
-
-
 def _keyword_matrix(results: list[ScoreResult], jd: JDSpec) -> pd.DataFrame:
-    """Build the candidate × keyword grid (+ Score and GitHub columns)."""
-    # Optional, purely informational column; omitted when nobody has a profile.
-    show_coding = any(
-        profile.profile_found
-        for r in results
-        for profile in r.coding_profiles.values()
-    )
+    """Build the candidate × keyword grid (+ Score and GitHub columns).
+
+    Coding-profile evidence deliberately lives in the full results table and
+    the candidate detail view, not here — the matrix stays a keyword grid.
+    """
     rows = []
     for r in sorted(results, key=_result_sort_key, reverse=True):
         row = {"Candidate": r.candidate.display_name, "Score": round(r.score) if r.score is not None else "N/A"}
         for kw in jd.required:
             row[kw] = _keyword_cell(r, kw)
         row["GitHub"] = _github_cell(r)
-        if show_coding:
-            row["Coding"] = _coding_cell(r)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -223,23 +204,21 @@ def _keyword_matrix(results: list[ScoreResult], jd: JDSpec) -> pd.DataFrame:
 def _render_coding_profiles(r: ScoreResult) -> None:
     """Public coding-platform evidence. Informational only — never scored."""
     st.markdown("**👨‍💻 Coding Profiles**")
-    for platform in CODING_PLATFORMS:
-        label = PLATFORM_LABELS[platform]
-        profile = r.coding_profiles.get(platform)
-        if profile is None or not profile.profile_found:
-            reason = (profile.status if profile else "") or "No public profile link found"
-            st.markdown(f"▫️ **{label}** — :gray[Not found · {reason}]")
-            continue
-        line = f"✅ **{label}** — [🔗 Profile]({profile.profile_url})"
-        stats = []
+    found = available_profiles(r.coding_profiles)
+    if not found:
+        st.caption("No public coding profile was found for this candidate.")
+        return
+    for profile in found:
+        line = (
+            f"✅ **{PLATFORM_LABELS[profile.platform]}** — "
+            f"[🔗 Profile]({profile.profile_url})"
+        )
         if profile.problems_solved is not None:
-            stats.append(f"Problems Solved: **{profile.problems_solved}**")
+            line += f" · Solved: **{profile.problems_solved}**"
         if profile.rating is not None:
-            stats.append(f"Rating: **{profile.rating}**")
-        if stats:
-            line += " · " + " · ".join(stats)
-        else:
-            line += f" · :gray[{profile.status or 'Stats not available'}]"
+            line += f" · Rating: **{profile.rating}**"
+        if profile.problems_solved is None and profile.rating is None:
+            line += f" · :gray[{stats_summary(profile)}]"
         st.markdown(line)
     st.caption("Coding-profile evidence is informational and does not affect the score or recommendation.")
 
@@ -355,9 +334,10 @@ check_github = not st.sidebar.checkbox(
     "for large sheets.",
 )
 fetch_coding_stats = not st.sidebar.checkbox(
-    "Skip coding-profile stats (faster)", value=True,
-    help="Coding profiles are always detected from the sheet/resume. Turn this "
-    "off to also fetch public LeetCode/CodeChef/Codeforces statistics.",
+    "Skip coding-profile stats (faster)", value=False,
+    help="Solved counts are fetched from the public LeetCode/Codeforces/CodeChef "
+    "profiles by default. Tick this to skip those requests on a large sheet — "
+    "profile links are still detected either way.",
 )
 limit = st.sidebar.number_input(
     "Limit candidates (0 = all)", min_value=0, value=0, step=10,
@@ -665,6 +645,11 @@ if outcome is not None:
                 "Matching Score", min_value=0, max_value=100, format="%d"
             ),
             "Resume URL": st.column_config.LinkColumn("Resume URL"),
+            # Coding-profile links stay clickable without showing a long URL.
+            **{
+                column: st.column_config.LinkColumn(column, display_text="🔗 Profile")
+                for column in CODING_COLUMNS if column.endswith(" Profile")
+            },
         },
     )
 

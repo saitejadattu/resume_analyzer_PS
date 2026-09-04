@@ -5,13 +5,23 @@ from unittest.mock import patch
 
 from resume_shortlisting import config
 from resume_shortlisting.coding_profiles import (
+    available_profiles,
+    clear_stats_cache,
     discover_coding_profiles,
     fetch_stats,
     find_profile_handles,
+    stats_summary,
+    table_fields,
 )
 from resume_shortlisting.downloader import DownloadResult
 from resume_shortlisting.keyword_matcher import match_resume
-from resume_shortlisting.models import CODING_PLATFORMS, Candidate, GithubStatus, JDSpec
+from resume_shortlisting.models import (
+    CODING_PLATFORMS,
+    Candidate,
+    CodingProfile,
+    GithubStatus,
+    JDSpec,
+)
 from resume_shortlisting.parser import parse_resume
 from resume_shortlisting.pipeline import process_candidate
 from resume_shortlisting.scorer import score_candidate
@@ -94,6 +104,12 @@ class ProfileDiscoveryTests(unittest.TestCase):
 class MissingStatisticsTests(unittest.TestCase):
     """Unavailable public statistics must degrade, never raise."""
 
+    def setUp(self):
+        clear_stats_cache()
+
+    def tearDown(self):
+        clear_stats_cache()
+
     def test_unreachable_platform_yields_unavailable_status(self):
         with patch(
             "resume_shortlisting.coding_profiles._codeforces_stats",
@@ -150,6 +166,8 @@ class ScoringIsolationTests(unittest.TestCase):
     """Coding evidence must not move the score or the recommendation."""
 
     def setUp(self):
+        clear_stats_cache()
+        self.addCleanup(clear_stats_cache)
         self.kb = load_kb()
         self.jd = JDSpec(
             required=["Python", "Django", "SQL"],
@@ -243,6 +261,169 @@ class ExistingBehaviourRegressionTests(unittest.TestCase):
         self.assertIsNone(result.score)
         self.assertEqual(result.recommendation, "N/A")
         self.assertEqual(result.coding_profiles, {})
+
+
+class StatsCacheTests(unittest.TestCase):
+    """One request per handle, however many candidates reference it."""
+
+    def setUp(self):
+        clear_stats_cache()
+
+    def tearDown(self):
+        clear_stats_cache()
+
+    def test_repeated_lookups_hit_the_cache(self):
+        calls = []
+
+        def fake(sess, handle):
+            calls.append(handle)
+            return 342, None
+
+        with patch("resume_shortlisting.coding_profiles._fetcher", return_value=fake):
+            first = fetch_stats("leetcode", "ada_l")
+            second = fetch_stats("leetcode", "ADA_L")
+        self.assertEqual(first, second)
+        self.assertEqual(len(calls), 1, "handle was requested more than once")
+
+    def test_failures_are_cached_too(self):
+        calls = []
+
+        def failing(sess, handle):
+            calls.append(handle)
+            raise RuntimeError("platform down")
+
+        with patch("resume_shortlisting.coding_profiles._fetcher", return_value=failing):
+            fetch_stats("codechef", "ada_l")
+            solved, rating, status = fetch_stats("codechef", "ada_l")
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(solved)
+        self.assertIsNone(rating)
+        self.assertIn("unavailable", status.lower())
+
+
+class DisplayFormattingTests(unittest.TestCase):
+    """Wording shared by the match matrix, results table and detail view."""
+
+    def _profile(self, platform, **kwargs):
+        return CodingProfile(platform=platform, profile_found=True, **kwargs)
+
+    def test_solved_count_is_reported_when_available(self):
+        self.assertEqual(
+            stats_summary(self._profile("leetcode", problems_solved=342)), "342 solved"
+        )
+
+    def test_explicit_zero_is_reported_as_zero(self):
+        self.assertEqual(
+            stats_summary(self._profile("codechef", problems_solved=0)), "0 solved"
+        )
+
+    def test_unknown_count_never_becomes_zero(self):
+        label = stats_summary(self._profile("codeforces", status="Profile found; public stats unavailable"))
+        self.assertEqual(label, "Stats unavailable")
+        self.assertNotIn("0", label)
+
+    def test_skipped_stats_are_distinguished_from_unavailable(self):
+        skipped = self._profile("leetcode", status="Profile found; public stats not fetched")
+        self.assertEqual(stats_summary(skipped), "Stats skipped")
+
+    def test_rating_is_used_when_no_solved_count_is_published(self):
+        self.assertEqual(
+            stats_summary(self._profile("codeforces", rating=1248)), "rating 1248"
+        )
+
+    def test_missing_profile_has_no_statistics_label(self):
+        self.assertEqual(stats_summary(CodingProfile(platform="leetcode")), "")
+
+    def test_available_profiles_are_found_only_and_ordered(self):
+        profiles = {
+            "leetcode": self._profile("leetcode", problems_solved=342),
+            "codeforces": CodingProfile(platform="codeforces"),
+            "codechef": self._profile("codechef", problems_solved=96),
+        }
+        self.assertEqual(
+            [p.platform for p in available_profiles(profiles)], ["leetcode", "codechef"]
+        )
+
+    def test_table_fields_carry_solved_count_and_url(self):
+        profiles = {
+            "leetcode": self._profile("leetcode", profile_url="https://leetcode.com/u/ada_l/", problems_solved=342),
+            "codeforces": self._profile("codeforces", profile_url="https://codeforces.com/profile/ada_l", problems_solved=187),
+            "codechef": CodingProfile(platform="codechef"),
+        }
+        fields = table_fields(profiles)
+        self.assertEqual(fields["LeetCode Solved"], "342")
+        self.assertEqual(fields["LeetCode Profile"], "https://leetcode.com/u/ada_l/")
+        self.assertEqual(fields["Codeforces Solved"], "187")
+        self.assertEqual(fields["Codeforces Profile"], "https://codeforces.com/profile/ada_l")
+        # A platform without a profile gets empty cells, never a zero or a URL.
+        self.assertEqual(fields["CodeChef Solved"], "")
+        self.assertEqual(fields["CodeChef Profile"], "")
+
+    def test_table_fields_report_why_a_count_is_missing(self):
+        profiles = {
+            "leetcode": self._profile(
+                "leetcode", profile_url="https://leetcode.com/u/ada_l/",
+                status="Profile found; public stats not fetched",
+            ),
+            "codeforces": self._profile(
+                "codeforces", profile_url="https://codeforces.com/profile/ada_l",
+                status="Profile found; public stats unavailable",
+            ),
+        }
+        fields = table_fields(profiles)
+        self.assertEqual(fields["LeetCode Solved"], "Stats skipped")
+        self.assertEqual(fields["Codeforces Solved"], "Stats unavailable")
+        self.assertEqual(fields["LeetCode Profile"], "https://leetcode.com/u/ada_l/")
+
+    def test_table_fields_are_empty_without_profiles(self):
+        fields = table_fields({})
+        self.assertEqual(set(fields.values()), {""})
+
+    def test_profile_urls_are_preserved_end_to_end(self):
+        profiles = discover_coding_profiles(
+            Candidate(name="Ada"),
+            "leetcode.com/u/ada_l codeforces.com/profile/ada_cf codechef.com/users/ada_cc",
+        )
+        self.assertEqual(
+            [p.profile_url for p in available_profiles(profiles)],
+            [
+                "https://leetcode.com/u/ada_l/",
+                "https://codeforces.com/profile/ada_cf",
+                "https://www.codechef.com/users/ada_cc",
+            ],
+        )
+
+
+class ResultsTableTests(unittest.TestCase):
+    """The full results table carries readable coding evidence."""
+
+    def test_coding_column_is_present_and_populated(self):
+        from resume_shortlisting.excel_writer import to_dataframe
+        from resume_shortlisting.models import ScoreResult
+
+        with_profiles = ScoreResult(
+            candidate=Candidate(name="Ada"), score=70, recommendation="Shortlist",
+            coding_profiles={
+                "leetcode": CodingProfile(
+                    platform="leetcode", profile_found=True,
+                    profile_url="https://leetcode.com/u/ada_l/", problems_solved=342,
+                ),
+            },
+        )
+        without = ScoreResult(candidate=Candidate(name="Bob"), score=70, recommendation="Shortlist")
+        frame = to_dataframe([with_profiles, without])
+        for column in ("LeetCode Solved", "LeetCode Profile", "Codeforces Solved",
+                       "Codeforces Profile", "CodeChef Solved", "CodeChef Profile"):
+            self.assertIn(column, frame.columns)
+        self.assertEqual(frame["LeetCode Solved"].tolist(), ["342", ""])
+        self.assertEqual(
+            frame["LeetCode Profile"].tolist(), ["https://leetcode.com/u/ada_l/", ""]
+        )
+        self.assertEqual(frame["CodeChef Solved"].tolist(), ["", ""])
+        # Existing columns and their order are untouched.
+        self.assertEqual(frame.columns[0], "Student Name")
+        self.assertIn("Matching Score", frame.columns)
+        self.assertIn("Recommendation", frame.columns)
 
 
 if __name__ == "__main__":

@@ -243,13 +243,46 @@ def _fetcher(platform: str):
     }.get(platform)
 
 
+# One result per (platform, handle) for the life of the process. Candidates are
+# processed concurrently and a handle can repeat across rows or reruns, so this
+# keeps every profile to a single request — which also protects the Codeforces
+# rate limit. Failures are cached too: a platform that is down stays down for
+# the run rather than being retried once per candidate.
+_STATS_CACHE: dict[tuple[str, str], tuple[int | None, int | None, str]] = {}
+_STATS_CACHE_LOCK = threading.Lock()
+
+
+def clear_stats_cache() -> None:
+    """Drop every cached statistics lookup (used by tests)."""
+    with _STATS_CACHE_LOCK:
+        _STATS_CACHE.clear()
+
+
 def fetch_stats(
     platform: str, handle: str, sess: requests.Session | None = None
 ) -> tuple[int | None, int | None, str]:
     """Return ``(problems_solved, rating, status)`` for one platform handle.
 
     Never raises: any network/parsing problem becomes an "unavailable" status.
+    Repeated lookups of the same handle are served from the in-process cache.
     """
+    key = (platform, handle.casefold())
+    with _STATS_CACHE_LOCK:
+        cached = _STATS_CACHE.get(key)
+    if cached is not None:
+        logger.debug("%s stats served from cache for %s", platform, handle)
+        return cached
+
+    result = _fetch_stats_uncached(platform, handle, sess)
+    with _STATS_CACHE_LOCK:
+        _STATS_CACHE[key] = result
+    return result
+
+
+def _fetch_stats_uncached(
+    platform: str, handle: str, sess: requests.Session | None = None
+) -> tuple[int | None, int | None, str]:
+    """Perform the actual per-platform statistics lookup."""
     fetcher = _fetcher(platform)
     if fetcher is None:
         return None, None, STATUS_STATS_UNAVAILABLE
@@ -321,3 +354,66 @@ def discover_coding_profiles(
         if sess is not None:
             sess.close()
     return profiles
+
+
+# --------------------------------------------------------------------------- #
+# Display helpers — shared by the match matrix, results table and detail view
+# --------------------------------------------------------------------------- #
+def stats_summary(profile: CodingProfile) -> str:
+    """Short statistics label for one profile, e.g. ``"342 solved"``.
+
+    A solved count of zero is a real, reportable statistic and is shown as
+    ``"0 solved"``; an *unknown* count never becomes a zero. When the platform
+    published no solved count but did publish a rating, the rating is reported
+    rather than claiming nothing is known.
+    """
+    if not profile.profile_found:
+        return ""
+    if profile.problems_solved is not None:
+        return f"{profile.problems_solved} solved"
+    if profile.rating is not None:
+        return f"rating {profile.rating}"
+    if profile.status == STATUS_NOT_FETCHED:
+        return "Stats skipped"
+    return "Stats unavailable"
+
+
+def available_profiles(profiles: dict[str, CodingProfile]) -> list[CodingProfile]:
+    """Found profiles only, in canonical platform order."""
+    return [
+        profiles[platform]
+        for platform in CODING_PLATFORMS
+        if platform in profiles and profiles[platform].profile_found
+    ]
+
+
+# Two results-table columns per platform: the solved count and the profile URL.
+TABLE_COLUMNS: list[str] = [
+    f"{PLATFORM_LABELS[platform]} {suffix}"
+    for platform in CODING_PLATFORMS
+    for suffix in ("Solved", "Profile")
+]
+
+
+def table_fields(profiles: dict[str, CodingProfile]) -> dict[str, str]:
+    """Per-platform results-table cells: ``{"LeetCode Solved": "342", ...}``.
+
+    A platform with no profile yields empty cells rather than a zero or a
+    placeholder URL. When a profile exists but its count could not be read,
+    the reason ("Stats skipped" / "Stats unavailable") is shown instead.
+    """
+    fields: dict[str, str] = {}
+    for platform in CODING_PLATFORMS:
+        label = PLATFORM_LABELS[platform]
+        profile = profiles.get(platform)
+        if profile is None or not profile.profile_found:
+            fields[f"{label} Solved"] = ""
+            fields[f"{label} Profile"] = ""
+            continue
+        fields[f"{label} Solved"] = (
+            str(profile.problems_solved)
+            if profile.problems_solved is not None
+            else stats_summary(profile)
+        )
+        fields[f"{label} Profile"] = profile.profile_url
+    return fields
