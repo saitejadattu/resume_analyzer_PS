@@ -104,6 +104,11 @@ class ParsedResume(BaseModel):
     project_list: list[Project] = Field(default_factory=list)
     github_urls: list[str] = Field(default_factory=list)
     candidate_github_urls: list[str] = Field(default_factory=list)
+    # URLs recovered from the file's hyperlink annotations. Many resumes show a
+    # bare handle behind an icon, so these never appear in the visible text.
+    # Evidence only: kept out of ``raw_text`` so matching/scoring is unaffected.
+    link_urls: list[str] = Field(default_factory=list)
+    linkedin_urls: list[str] = Field(default_factory=list)
     raw_text: str = ""
 
     def sections_dict(self) -> dict[str, str]:
@@ -151,6 +156,7 @@ class SkillMatch(BaseModel):
     source: str = ""
     matched_text: str = ""
     project_github_url: str = ""
+    project_live_url: str = ""
     github_status: GithubStatus = GithubStatus.NOT_PROVIDED
     verified: bool = False
 
@@ -191,6 +197,7 @@ class ScoreResult(BaseModel):
     github_links: list[GithubLink] = Field(default_factory=list)
     # Whether GitHub links were actually validated this run.
     github_checked: bool = False
+    linkedin_urls: list[str] = Field(default_factory=list)
 
     # Full parsed projects (name, technologies, links) for the visual detail.
     projects: list[Project] = Field(default_factory=list)
@@ -218,6 +225,7 @@ class ScoreResult(BaseModel):
             "project_technologies": self.project_technologies,
             "github_status": self.github_status.value,
             "github_urls": self.github_urls,
+            "linkedin_urls": self.linkedin_urls,
             "github_links": [
                 {"url": link.url, "kind": link.kind.value, "status": link.status.value}
                 for link in self.github_links

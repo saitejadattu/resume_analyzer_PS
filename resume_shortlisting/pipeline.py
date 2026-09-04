@@ -19,7 +19,7 @@ from .parser import parse_resume
 from .scorer import score_candidate
 from .skills_kb import SkillsKB
 from .tech_detector import enrich_projects
-from .text_extractor import extract_text
+from .text_extractor import extract_link_urls, extract_text
 from .utils import get_logger
 
 logger = get_logger("pipeline")
@@ -37,10 +37,13 @@ def _failed_result(
     candidate: Candidate, jd: JDSpec, reason: str, *, status: str = "Processing Failed"
 ) -> ScoreResult:
     """Build a zero-ish result for a candidate we could not process."""
+    # No readable resume means no GitHub evidence, which the mandatory gate
+    # treats as a rejection. ``processing_status`` still records the real
+    # reason, so a broken Drive link stays distinguishable from a weak CV.
     return ScoreResult(
         candidate=candidate,
         score=None,
-        recommendation="N/A",
+        recommendation="Reject",
         processing_status=status,
         failure_reason=reason,
         missing_skills=jd.all_skills(),
@@ -82,7 +85,16 @@ def process_candidate(
             )
 
         # Step 4 + 9 + 11: parse sections, projects, github urls.
-        resume = parse_resume(text)
+        # Hyperlink annotations carry links the visible text never mentions.
+        # This is evidence only, so a failure here must never fail a candidate.
+        try:
+            link_urls = extract_link_urls(download.path)
+        except Exception as exc:  # noqa: BLE001 - evidence is never worth a failure
+            logger.warning(
+                "[%s] Link recovery skipped: %s", candidate.display_name, exc
+            )
+            link_urls = []
+        resume = parse_resume(text, link_urls)
 
         # Steps 7-8: detect per-project technologies (rule-based).
         enrich_projects(resume.project_list, kb)
@@ -122,7 +134,9 @@ def process_candidate(
         # influence the score, the breakdown, or the recommendation band.
         try:
             result.coding_profiles = discover_coding_profiles(
-                candidate, resume.raw_text, fetch_public_stats=fetch_coding_stats
+                candidate,
+                "\n".join([resume.raw_text, *resume.link_urls]),
+                fetch_public_stats=fetch_coding_stats,
             )
         except Exception as exc:  # noqa: BLE001 - evidence must never fail a run
             logger.warning(

@@ -114,16 +114,27 @@ CODING_PROFILE_TIMEOUT: int = int(os.getenv("RS_CODING_PROFILE_TIMEOUT", "15"))
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class ScoreWeights:
-    """Weighted scoring configuration. Positive = reward, negative = penalty."""
+    """Weighted scoring configuration.
+
+    The required-technology pool is split equally across the required keywords,
+    so a missing keyword costs exactly its share and the system scales to any
+    number of keywords. Project evidence is a single candidate-level bonus
+    awarded at the strongest available tier, never once per keyword.
+    """
 
     required_component_max: int = 80
     preferred_component_max: int = 10
-    project_github_max: int = 10
-    project_github_unchecked: int = 5
+    # Strongest tier wins; these never stack.
+    project_github_max: int = 15
+    # A deployed link alone is weaker evidence than a repository.
+    project_live_ratio: float = 0.7
+    # GitHub present in the resume but not attached to a matched project.
+    github_elsewhere_max: int = 6
+    linkedin_max: int = 5
 
     # Score is clamped to this inclusive range.
     min_score: int = 0
-    max_score: int = 100
+    max_score: int = 110
 
 
 WEIGHTS = ScoreWeights()
@@ -150,12 +161,20 @@ class RecommendationBands:
     consider: int = 40
     # Anything below `consider` -> "Reject".
 
-    def classify(self, score: float) -> str:
-        if score >= self.strong_shortlist:
+    def classify(self, score: float, achievable: float = 100) -> str:
+        """Band a score against what was actually achievable for this JD.
+
+        Thresholds are percentages of ``achievable`` so they keep their meaning
+        whatever the weights add up to (a JD with no preferred keywords simply
+        has a lower ceiling). ``achievable`` defaults to 100, which reproduces
+        the original absolute behaviour for callers that pass only a score.
+        """
+        percentage = (score / achievable * 100) if achievable > 0 else 0.0
+        if percentage >= self.strong_shortlist:
             return "Strong Shortlist"
-        if score >= self.shortlist:
+        if percentage >= self.shortlist:
             return "Shortlist"
-        if score >= self.consider:
+        if percentage >= self.consider:
             return "Consider"
         return "Reject"
 

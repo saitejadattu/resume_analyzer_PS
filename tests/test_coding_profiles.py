@@ -144,9 +144,10 @@ class MissingStatisticsTests(unittest.TestCase):
         self.assertEqual(result.processing_status, "Analyzed")
         self.assertTrue(result.coding_profiles["leetcode"].profile_found)
         self.assertIsNone(result.coding_profiles["leetcode"].problems_solved)
-        # One required keyword matched in Skills -> 40 -> "Consider", unchanged.
-        self.assertEqual(result.score, 40.0)
-        self.assertEqual(result.recommendation, "Consider")
+        # The only required keyword matched in Skills -> full 80-point pool,
+        # plus 6 for the GitHub link the resume carries outside any project.
+        self.assertEqual(result.score, 86.0)
+        self.assertEqual(result.recommendation, "Strong Shortlist")
 
     def test_partial_statistics_are_preserved(self):
         with patch(
@@ -237,7 +238,8 @@ class ExistingBehaviourRegressionTests(unittest.TestCase):
         result = score_candidate(
             Candidate(name="Ada"), resume, jd, report, GithubStatus.NONE, [], github_checked=False
         )
-        self.assertEqual(result.score, 0.0)
+        # Whole Resume remains discovery-only: it contributes no keyword points.
+        self.assertEqual(result.score_breakdown["required_keywords"], 0.0)
         self.assertEqual(result.recommendation, "Reject")
 
     def test_experience_discovery_still_works(self):
@@ -259,7 +261,7 @@ class ExistingBehaviourRegressionTests(unittest.TestCase):
         )
         self.assertEqual(result.processing_status, "Access Denied")
         self.assertIsNone(result.score)
-        self.assertEqual(result.recommendation, "N/A")
+        self.assertEqual(result.recommendation, "Reject")
         self.assertEqual(result.coding_profiles, {})
 
 

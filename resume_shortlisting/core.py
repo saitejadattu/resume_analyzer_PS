@@ -150,8 +150,9 @@ def run_shortlisting(
     status_counts: dict[str, int] = {}
     for r in results:
         status_counts[r.processing_status] = status_counts.get(r.processing_status, 0) + 1
-        if r.processing_status == "Analyzed":
-            stats[r.recommendation] = stats.get(r.recommendation, 0) + 1
+        # Unprocessable candidates are rejected by the mandatory GitHub gate,
+        # so they belong in the recommendation counts like everyone else.
+        stats[r.recommendation] = stats.get(r.recommendation, 0) + 1
 
     return RunResult(
         results=results,

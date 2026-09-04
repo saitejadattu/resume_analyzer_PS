@@ -44,7 +44,8 @@ def _project_match(skill: str, resume: ParsedResume, kb: SkillsKB, required: boo
         else: continue
         return SkillMatch(skill=skill, is_required=required, match_type="project",
                           project_name=project.name, source=source, matched_text=text[:300],
-                          project_github_url=project.github_url)
+                          project_github_url=project.github_url,
+                          project_live_url=project.live_url)
     return None
 
 

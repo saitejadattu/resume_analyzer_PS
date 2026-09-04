@@ -27,6 +27,54 @@ class TextExtractionError(Exception):
     """Raised when a PDF cannot be read at all."""
 
 
+def _links_from_pdf(pdf_path: Path) -> list[str]:
+    """Return every external URI attached to the PDF as a link annotation."""
+    urls: list[str] = []
+    with fitz.open(pdf_path) as doc:
+        for page in doc:
+            for link in page.get_links():
+                uri = link.get("uri")
+                if uri:
+                    urls.append(uri)
+    return urls
+
+
+def _links_from_docx(path: Path) -> list[str]:
+    """Return every external hyperlink target in a .docx."""
+    return [
+        rel.target_ref
+        for rel in Document(path).part.rels.values()
+        if rel.reltype.endswith("/hyperlink") and rel.is_external
+    ]
+
+
+def extract_link_urls(path: Path) -> list[str]:
+    """Recover hyperlink targets that are not present in the visible text.
+
+    Resume templates commonly render a GitHub/LeetCode link as an icon plus a
+    bare handle, leaving the real URL only in the file's link annotations. This
+    never raises: a file we cannot read simply contributes no links.
+    """
+    path = Path(path)
+    try:
+        urls = _links_from_docx(path) if path.suffix.lower() == ".docx" else _links_from_pdf(path)
+    except Exception as exc:  # noqa: BLE001 - link recovery is best-effort
+        logger.debug("No link annotations read from %s: %s", path, exc)
+        return []
+    # Preserve order, drop duplicates and anything that is not a web link.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for url in urls:
+        url = url.strip()
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        key = url.lower().rstrip("/")
+        if key not in seen:
+            seen.add(key)
+            ordered.append(url)
+    return ordered
+
+
 def _extract_from_pdf(pdf_path: Path) -> str:
     """Read every page of a PDF and return concatenated text."""
     parts: list[str] = []

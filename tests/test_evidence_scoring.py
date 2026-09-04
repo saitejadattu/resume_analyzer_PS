@@ -23,13 +23,51 @@ class EvidenceScoringTests(unittest.TestCase):
         self.assertEqual(found["Django"].source, "tech_stack")
         self.assertEqual(found["SQL"].match_type, "skills")
 
-    def test_project_github_and_skip_are_distinct(self):
+    def test_project_repository_earns_the_full_bonus_whether_or_not_it_was_checked(self):
+        # The gate and the bonus both test for presence: skipping validation
+        # must not cost a candidate points.
         report = match_resume(self.resume, self.jd, self.kb)
         skipped = score_candidate(Candidate(name="A"), self.resume, self.jd, report, GithubStatus.NONE, [], github_checked=False)
         working = score_candidate(Candidate(name="A"), self.resume, self.jd, report, GithubStatus.WORKING, [], github_checked=True, github_links=[GithubLink(url="https://github.com/example/hospital", status=GithubStatus.WORKING)])
-        self.assertEqual(skipped.score_breakdown["project_github"], 5)
-        self.assertEqual(working.score_breakdown["project_github"], 10)
-        self.assertGreater(working.score, skipped.score)
+        self.assertEqual(skipped.score_breakdown["project_evidence"], 15)
+        self.assertEqual(working.score_breakdown["project_evidence"], 15)
+        self.assertEqual(working.score, skipped.score)
+
+    def test_a_disproved_repository_falls_back_to_a_weaker_tier(self):
+        report = match_resume(self.resume, self.jd, self.kb)
+        broken = score_candidate(
+            Candidate(name="A"), self.resume, self.jd, report, GithubStatus.NOT_FOUND,
+            self.resume.github_urls, github_checked=True,
+            github_links=[GithubLink(url="https://github.com/example/hospital", status=GithubStatus.NOT_FOUND)],
+        )
+        # The repo is disproved, but a GitHub URL still exists in the resume,
+        # so the candidate passes the gate on the weaker "elsewhere" tier.
+        self.assertEqual(broken.score_breakdown["project_evidence"], 6)
+        self.assertNotEqual(broken.recommendation, "Reject")
+
+    def test_live_link_only_is_worth_seventy_percent(self):
+        # The GitHub link sits in the header, not in the project block, so the
+        # project itself offers only a deployment as evidence.
+        resume = parse_resume(
+            "ADA LOVELACE  https://github.com/ada\n"
+            "Skills\nPython, SQL, Django\nProjects\nHospital System\n"
+            "Built with Django.\nTech Stack: Django, PostgreSQL\n"
+            "Live: https://hospital.example.app\n"
+        )
+        enrich_projects(resume.project_list, self.kb)
+        report = match_resume(resume, self.jd, self.kb)
+        result = score_candidate(Candidate(name="A"), resume, self.jd, report,
+                                 GithubStatus.NONE, resume.github_urls, github_checked=False)
+        self.assertEqual(result.score_breakdown["project_evidence"], 10.5)
+
+    def test_missing_github_anywhere_is_rejected_regardless_of_score(self):
+        report = match_resume(self.resume, self.jd, self.kb)
+        resume = self.resume.model_copy(update={"github_urls": [], "candidate_github_urls": []})
+        result = score_candidate(Candidate(name="A"), resume, self.jd, report,
+                                 GithubStatus.NONE, [], github_checked=False)
+        self.assertEqual(result.score_breakdown["required_keywords"], 80.0)
+        self.assertEqual(result.recommendation, "Reject")
+        self.assertIn("no GitHub link", result.remarks)
 
     def test_project_mode_does_not_accept_skills_only(self):
         resume = parse_resume("Skills\nPython, Django\nProjects\nPortfolio\nHTML, CSS")
@@ -101,7 +139,10 @@ class EvidenceScoringTests(unittest.TestCase):
         evidence = {item.skill: item for item in result.keyword_evidence}
         self.assertEqual(evidence["Python"].match_type, "skills")
         self.assertEqual(evidence["n8n"].match_type, "whole_resume")
-        self.assertEqual(result.score, 20.0)
+        # Python earns its full half of the 80-point pool; the Whole Resume
+        # discovery match still scores nothing.
+        self.assertEqual(result.score_breakdown["required_keywords"], 40.0)
+        self.assertEqual(result.score, 40.0)
 
 
 if __name__ == "__main__":

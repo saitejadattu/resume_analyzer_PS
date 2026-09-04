@@ -347,9 +347,13 @@ limit = st.sidebar.number_input(
 st.sidebar.divider()
 st.sidebar.subheader("Recommendation bands")
 st.sidebar.caption(
-    f"Strong ≥ {config.BANDS.strong_shortlist} · "
-    f"Shortlist ≥ {config.BANDS.shortlist} · "
-    f"Consider ≥ {config.BANDS.consider}"
+    f"Strong ≥ {config.BANDS.strong_shortlist}% · "
+    f"Shortlist ≥ {config.BANDS.shortlist}% · "
+    f"Consider ≥ {config.BANDS.consider}% of the achievable score."
+)
+st.sidebar.caption(
+    "A candidate with no GitHub link anywhere in the resume is rejected "
+    "regardless of score."
 )
 
 # --------------------------------------------------------------------------- #
@@ -603,7 +607,7 @@ if outcome is not None:
         hide_index=True,
         column_config={
             "Score": st.column_config.ProgressColumn(
-                "Score", min_value=0, max_value=100, format="%d"
+                "Score", min_value=0, max_value=config.WEIGHTS.max_score, format="%d"
             ),
         },
     )
@@ -642,7 +646,7 @@ if outcome is not None:
         hide_index=True,
         column_config={
             "Matching Score": st.column_config.ProgressColumn(
-                "Matching Score", min_value=0, max_value=100, format="%d"
+                "Matching Score", min_value=0, max_value=config.WEIGHTS.max_score, format="%d"
             ),
             "Resume URL": st.column_config.LinkColumn("Resume URL"),
             # Coding-profile links stay clickable without showing a long URL.

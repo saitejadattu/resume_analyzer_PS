@@ -32,7 +32,7 @@ class ProcessingStatusTests(unittest.TestCase):
         )
         self.assertEqual(result.processing_status, "Access Denied")
         self.assertIsNone(result.score)
-        self.assertEqual(result.recommendation, "N/A")
+        self.assertEqual(result.recommendation, "Reject")
 
     def test_empty_extraction_is_extraction_failed(self):
         candidate = Candidate(name="Unreadable")
@@ -47,9 +47,9 @@ class ProcessingStatusTests(unittest.TestCase):
                 )
         self.assertEqual(result.processing_status, "Extraction Failed")
         self.assertIsNone(result.score)
-        self.assertEqual(result.recommendation, "N/A")
+        self.assertEqual(result.recommendation, "Reject")
 
-    def test_run_stats_count_only_analyzed_recommendations(self):
+    def test_run_stats_cover_every_candidate(self):
         candidates = [Candidate(name="A"), Candidate(name="B"), Candidate(name="C")]
         analyzed = ScoreResult(candidate=candidates[0], score=80, recommendation="Strong Shortlist")
         rejected = ScoreResult(candidate=candidates[1], score=0, recommendation="Reject")
@@ -60,8 +60,11 @@ class ProcessingStatusTests(unittest.TestCase):
             outcome = run_shortlisting(
                 source=FrameSource(candidates), jd=JDSpec(), write_outputs=False
             )
-        self.assertEqual(outcome.stats, {"Strong Shortlist": 1, "Reject": 1})
+        # The unreadable candidate is rejected by the GitHub gate, so it is
+        # counted like any other rejection rather than vanishing from the tally.
+        self.assertEqual(outcome.stats, {"Strong Shortlist": 1, "Reject": 2})
         self.assertEqual(outcome.status_counts, {"Analyzed": 2, "Download Failed": 1})
+        self.assertEqual(sum(outcome.stats.values()), len(outcome.results))
         self.assertEqual(sum(outcome.status_counts.values()), len(outcome.results))
 
 

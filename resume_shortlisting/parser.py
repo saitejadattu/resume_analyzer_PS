@@ -22,6 +22,12 @@ GITHUB_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A LinkedIn member profile (linkedin.com/in/<slug>), any country subdomain.
+LINKEDIN_URL_RE = re.compile(
+    r"(?:https?://)?(?:[A-Za-z]{2,3}\.)?linkedin\.com/in/[A-Za-z0-9_%\-.]+",
+    re.IGNORECASE,
+)
+
 # Generic http(s) URL, used to spot "live"/demo links in a project block.
 GENERIC_URL_RE = re.compile(r"https?://[^\s)\]}<>\"']+", re.IGNORECASE)
 
@@ -195,6 +201,19 @@ def find_github_urls(text: str) -> list[str]:
     return ordered
 
 
+def find_linkedin_urls(text: str) -> list[str]:
+    """Return all unique LinkedIn profile URLs in the text."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for raw in LINKEDIN_URL_RE.findall(text):
+        url = _normalize_url(raw.rstrip(".,);"))
+        key = url.lower().rstrip("/")
+        if key not in seen:
+            seen.add(key)
+            ordered.append(url)
+    return ordered
+
+
 def _normalize_url(url: str) -> str:
     """Ensure a URL has an https scheme."""
     url = url.strip()
@@ -203,13 +222,22 @@ def _normalize_url(url: str) -> str:
     return url
 
 
-def parse_resume(text: str) -> ParsedResume:
-    """Full parse: sections + projects + github links (Steps 4, 9, 11)."""
-    if not text.strip():
+def parse_resume(text: str, link_urls: list[str] | None = None) -> ParsedResume:
+    """Full parse: sections + projects + github links (Steps 4, 9, 11).
+
+    ``link_urls`` are URLs recovered from the file's hyperlink annotations.
+    They widen GitHub *discovery* only. They are deliberately excluded from
+    ``raw_text`` and from ``Project.github_url`` so that Whole Resume matching
+    and the project-GitHub score component behave exactly as before.
+    """
+    links = list(dict.fromkeys(link_urls or []))
+    if not text.strip() and not links:
         return ParsedResume()
 
     sections = split_sections(text)
     projects_text = sections.get("projects", "")
+    # Search the visible text plus the recovered links for GitHub URLs.
+    github_source = "\n".join([text, *links]) if links else text
 
     parsed = ParsedResume(
         skills=sections.get("skills", ""),
@@ -218,11 +246,13 @@ def parse_resume(text: str) -> ParsedResume:
         education=sections.get("education", ""),
         certifications=sections.get("certifications", ""),
         project_list=build_projects(projects_text),
-        github_urls=find_github_urls(text),
+        github_urls=find_github_urls(github_source),
         candidate_github_urls=[
-            url for url in find_github_urls(text)
+            url for url in find_github_urls(github_source)
             if classify_kind(url)[0] is GithubKind.PROFILE
         ],
+        link_urls=links,
+        linkedin_urls=find_linkedin_urls(github_source),
         raw_text=text,
     )
 

@@ -103,15 +103,18 @@ class DownloaderTests(unittest.TestCase):
 
 
 class FailureResultTests(unittest.TestCase):
-    def test_download_failure_is_not_a_rejection(self):
+    def test_download_failure_is_rejected_but_keeps_its_reason(self):
         result = _failed_result(
             Candidate(name="Ana", resume_url="https://example.com/resume.pdf"),
             JDSpec(required=["Python"]),
             "HTTP 404: file not found",
             status="Download Failed",
         )
+        # The mandatory GitHub gate rejects a candidate we could not read, but
+        # the processing status still says why, so a broken link stays
+        # distinguishable from a genuinely weak CV.
         self.assertIsNone(result.score)
-        self.assertEqual(result.recommendation, "N/A")
+        self.assertEqual(result.recommendation, "Reject")
         self.assertEqual(result.processing_status, "Download Failed")
         self.assertEqual(result.failure_reason, "HTTP 404: file not found")
         self.assertEqual(to_dataframe([result]).loc[0, "Matching Score"], "N/A")
