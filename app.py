@@ -201,6 +201,35 @@ def _keyword_matrix(results: list[ScoreResult], jd: JDSpec) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _render_experience(r: ScoreResult) -> None:
+    """Structured Experience-section evidence. Informational only."""
+    st.markdown("**💼 Experience**")
+    if not r.experience_entries:
+        st.caption("No experience section detected in this resume.")
+        return
+    st.markdown(f"Total Experience: **{r.total_experience or 'Not available'}**")
+    for entry in r.experience_entries:
+        heading = " · ".join(
+            part for part in (entry.role or "", entry.company or "") if part
+        ) or "(unlabelled role)"
+        st.markdown(f"▪️ **{heading}**")
+        span = " – ".join(p for p in (entry.start_date, entry.end_date) if p)
+        detail = f"Duration: {span}" if span else "Duration: Not available"
+        if entry.duration_months is not None:
+            detail += f" ({entry.duration})"
+        st.markdown(detail)
+        if entry.technologies:
+            st.markdown("Tech Stack: " + "&nbsp;".join(
+                f":blue-background[{tech}]" for tech in entry.technologies
+            ))
+        else:
+            st.markdown(":gray[Tech Stack: Not mentioned]")
+        if entry.text:
+            with st.expander("Evidence", expanded=False):
+                st.text(entry.text)
+    st.caption("Experience evidence is informational and does not affect the score or recommendation.")
+
+
 def _render_coding_profiles(r: ScoreResult) -> None:
     """Public coding-platform evidence. Informational only — never scored."""
     st.markdown("**👨‍💻 Coding Profiles**")
@@ -273,7 +302,8 @@ def _render_candidate_detail(r: ScoreResult, jd: JDSpec) -> None:
                 f"**{link.status.value}** · {link.kind.value}"
             )
 
-    # --- Coding profiles (information only) --------------------------------
+    # --- Experience + coding profiles (information only) --------------------
+    _render_experience(r)
     _render_coding_profiles(r)
 
     # --- Projects with detected technologies -------------------------------

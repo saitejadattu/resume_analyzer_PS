@@ -94,6 +94,21 @@ class SkillsKB:
                 found.append(canonical)
         return found
 
+    def detect_skill_spans(self, text: str) -> list[tuple[str, int, int]]:
+        """Return ``(canonical, start, end)`` for every surface-form hit.
+
+        Same matching as :meth:`detect_skills`, but with positions, so callers
+        can tell a real mention from an incidental substring match (the alias
+        "js" inside "Node.js", say). Additive: nothing else uses it.
+        """
+        if not text:
+            return []
+        spans: list[tuple[str, int, int]] = []
+        for canonical, pattern in self._skill_patterns.items():
+            for match in pattern.finditer(text):
+                spans.append((canonical, match.start(), match.end()))
+        return spans
+
     def infer_from_phrases(self, text: str) -> list[str]:
         """Infer technologies from descriptive phrases (Step 8, rule-based)."""
         if not text:

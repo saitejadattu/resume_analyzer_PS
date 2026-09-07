@@ -55,6 +55,27 @@ class CodingProfile(BaseModel):
     status: str = ""
 
 
+class ExperienceEntry(BaseModel):
+    """One employment entry parsed from the resume's Experience section.
+
+    Informational only: never read by the scorer or the recommendation bands.
+    ``duration_months`` stays ``None`` when the dates could not be parsed, so an
+    unknown duration is never mistaken for zero. ``technologies`` holds only
+    what this entry's own text names explicitly.
+    """
+
+    company: str = ""
+    role: str = ""
+    start_date: str = ""
+    end_date: str = ""
+    # Human-readable span, e.g. "2 years 8 months" or "Not available".
+    duration: str = ""
+    duration_months: int | None = None
+    technologies: list[str] = Field(default_factory=list)
+    # The original block, kept so every extracted field stays explainable.
+    text: str = ""
+
+
 class Candidate(BaseModel):
     """A single row read from the source sheet (Step 1)."""
 
@@ -206,6 +227,11 @@ class ScoreResult(BaseModel):
     # never read by the scorer or the recommendation bands.
     coding_profiles: dict[str, CodingProfile] = Field(default_factory=dict)
 
+    # Structured Experience-section evidence. Display only, like the above.
+    experience_entries: list[ExperienceEntry] = Field(default_factory=list)
+    total_experience: str = ""
+    total_experience_months: int | None = None
+
     # Human-readable explanation of the score / any processing failures.
     remarks: str = ""
     # Itemised score breakdown for transparency/debugging.
@@ -226,6 +252,8 @@ class ScoreResult(BaseModel):
             "github_status": self.github_status.value,
             "github_urls": self.github_urls,
             "linkedin_urls": self.linkedin_urls,
+            "total_experience": self.total_experience,
+            "experience_entries": [e.model_dump(mode="json") for e in self.experience_entries],
             "github_links": [
                 {"url": link.url, "kind": link.kind.value, "status": link.status.value}
                 for link in self.github_links

@@ -16,6 +16,8 @@ import re
 import pandas as pd
 
 from .coding_profiles import TABLE_COLUMNS as CODING_COLUMNS, table_fields
+from .experience import TABLE_COLUMNS as EXPERIENCE_COLUMNS
+from .experience import table_fields as experience_fields
 from .models import ScoreResult
 from .utils import get_logger
 
@@ -88,6 +90,7 @@ COLUMNS: list[str] = [
     "Remarks",
     "Score Breakdown",
     "Keyword Evidence",
+    *EXPERIENCE_COLUMNS,
 ]
 
 FINAL_COLUMNS = [
@@ -135,6 +138,8 @@ def _row(result: ScoreResult) -> dict[str, object]:
             + (f"; github_status={e.github_status.value}" if e.project_github_url else "")
             for e in result.keyword_evidence
         ),
+        # One line per experience, aligned across the four columns.
+        **experience_fields(result.experience_entries, result.total_experience),
     }
     return {key: sanitize_excel_value(value) for key, value in row.items()}
 

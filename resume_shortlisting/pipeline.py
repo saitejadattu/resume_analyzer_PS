@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import config
 from .coding_profiles import discover_coding_profiles
 from .downloader import DownloadResult
+from .experience import extract_experience, format_duration
 from .github_checker import summarize, validate_urls
 from .keyword_matcher import match_resume
 from .models import Candidate, GithubStatus, JDSpec, ScoreResult
@@ -129,6 +130,18 @@ def process_candidate(
             settings=settings,
             kb=kb,
         )
+
+        # Structured experience is attached *after* scoring for the same
+        # reason as the coding profiles below: it is recruiter evidence only.
+        try:
+            entries, months = extract_experience(resume.experience, kb)
+            result.experience_entries = entries
+            result.total_experience_months = months
+            result.total_experience = format_duration(months)
+        except Exception as exc:  # noqa: BLE001 - evidence never fails a run
+            logger.warning(
+                "[%s] Experience extraction skipped: %s", candidate.display_name, exc
+            )
 
         # Coding-profile evidence is attached *after* scoring, so it can never
         # influence the score, the breakdown, or the recommendation band.
