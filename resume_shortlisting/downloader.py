@@ -32,6 +32,21 @@ from .utils import get_logger, is_valid_url, resume_cache_path
 logger = get_logger("downloader")
 
 _GOOGLE_DRIVE_FILE_RE = re.compile(r"drive\.google\.com/file/d/([^/?#]+)", re.IGNORECASE)
+# Students often share the folder holding the resume rather than the file.
+_GOOGLE_FOLDER_RE = re.compile(
+    r"drive\.google\.com/drive/(?:u/\d+/)?folders/([0-9A-Za-z_-]+)", re.IGNORECASE
+)
+# ...or a Google Doc, whose page is HTML until it is exported.
+_GOOGLE_DOC_RE = re.compile(
+    r"docs\.google\.com/(document|presentation)/d/([0-9A-Za-z_-]+)", re.IGNORECASE
+)
+# Item ids on a rendered Drive folder page.
+_FOLDER_ITEM_RE = re.compile(r'data-id="([0-9A-Za-z_-]{20,})"')
+# Only the first few items are considered, so one odd folder cannot stall a run.
+_MAX_FOLDER_ITEMS = 5
+
+# Payloads that are definitely not a resume, whatever the content-type claims.
+_IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG\r\n", b"GIF8", b"BM", b"RIFF")
 
 
 def _google_drive_file_id(url: str) -> str | None:
@@ -76,9 +91,17 @@ class DownloadResult:
 
 
 def _looks_like_pdf(content: bytes, content_type: str) -> bool:
-    """Heuristic: is this payload actually a PDF?"""
-    if content[:5] == b"%PDF-":
+    """Heuristic: is this payload actually a PDF?
+
+    The magic bytes win. A content-type alone is not enough — Drive labels a
+    photo named ``resume.pdf`` as ``application/pdf``, and storing that as a
+    resume only produces an empty extraction later.
+    """
+    head = content[:1024]
+    if head[:5] == b"%PDF-" or b"%PDF-" in head:
         return True
+    if head.startswith(_IMAGE_MAGIC) or b"<html" in head[:512].lower():
+        return False
     return "application/pdf" in content_type.lower()
 
 
@@ -100,14 +123,64 @@ def _looks_like_resume(content: bytes, content_type: str, suffix: str) -> bool:
     return False
 
 
-def _download_once(url: str, timeout: int) -> requests.Response:
-    """Single HTTP GET; raises for status so 404 propagates as HTTPError."""
-    # Google Drive share pages are HTML, not resume files. Convert the common
-    # public ``/file/d/<id>/view`` form to its download endpoint while leaving
-    # every other source URL untouched.
+def _drive_download_url(file_id: str) -> str:
+    return f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
+
+
+def _resolve_drive_folder(url: str, timeout: int) -> list[str]:
+    """Return direct-download URLs for the files inside a public Drive folder.
+
+    The folder page is HTML, so a folder link downloads nothing useful on its
+    own. Item ids are read straight off that page — no API key needed. Returns
+    an empty list when the folder is private or empty, and never raises.
+    """
+    folder_id = _google_drive_folder_id(url)
+    if not folder_id:
+        return []
+    try:
+        resp = requests.get(
+            url, timeout=timeout, headers={"User-Agent": config.USER_AGENT},
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 - listing is best-effort
+        logger.info("Could not list Drive folder %s: %s", folder_id, exc)
+        return []
+
+    ordered: list[str] = []
+    for item_id in _FOLDER_ITEM_RE.findall(resp.text):
+        if item_id != folder_id and item_id not in ordered:
+            ordered.append(item_id)
+    logger.info("Drive folder %s exposed %d item(s)", folder_id, len(ordered))
+    return [_drive_download_url(i) for i in ordered[:_MAX_FOLDER_ITEMS]]
+
+
+def _google_drive_folder_id(url: str) -> str | None:
+    match = _GOOGLE_FOLDER_RE.search(url)
+    return match.group(1) if match else None
+
+
+def _candidate_urls(url: str, timeout: int) -> list[str]:
+    """Every URL worth trying for one sheet entry, best candidate first."""
+    if _google_drive_folder_id(url):
+        # Empty list here means "folder unreadable or empty" — reported as
+        # such, rather than falling back to downloading the HTML folder page.
+        return _resolve_drive_folder(url, timeout)
+
+    doc = _GOOGLE_DOC_RE.search(url)
+    if doc:
+        # A Doc/Slides page is HTML; its PDF export is a real resume.
+        kind, doc_id = doc.group(1), doc.group(2)
+        return [f"https://docs.google.com/{kind}/d/{doc_id}/export?format=pdf"]
+
     file_id = _google_drive_file_id(url)
     if file_id:
-        url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
+        return [_drive_download_url(file_id)]
+    return [url]
+
+
+def _download_once(url: str, timeout: int) -> requests.Response:
+    """Single HTTP GET; raises for status so 404 propagates as HTTPError."""
     resp = requests.get(
         url,
         timeout=timeout,
@@ -143,8 +216,8 @@ def download_resume(candidate: Candidate, settings: config.Settings) -> Download
         wait=wait_exponential(multiplier=settings.download_backoff, min=1, max=20),
         reraise=True,
     )
-    def _attempt() -> bytes:
-        resp = _download_once(url, settings.download_timeout)
+    def _attempt(target: str) -> bytes:
+        resp = _download_once(target, settings.download_timeout)
         # Enforce a max size while streaming to avoid memory blow-ups.
         chunks = bytearray()
         for chunk in resp.iter_content(chunk_size=64 * 1024):
@@ -162,7 +235,23 @@ def download_resume(candidate: Candidate, settings: config.Settings) -> Download
         return bytes(chunks), detected_suffix
 
     try:
-        content, detected_suffix = _attempt()
+        targets = _candidate_urls(url, settings.download_timeout)
+        if not targets:
+            msg = "Shared Drive folder is empty or not publicly accessible"
+            logger.warning("[%s] %s: %s", candidate.display_name, msg, url)
+            return DownloadResult(candidate, None, ok=False, error=msg)
+        last_error: Exception | None = None
+        content = detected_suffix = None
+        for target in targets:
+            try:
+                content, detected_suffix = _attempt(target)
+                break
+            except (PermanentDownloadError, requests.HTTPError) as exc:
+                # A folder can hold non-resume files; keep trying the rest.
+                last_error = exc
+                content = None
+        if content is None:
+            raise last_error if last_error else PermanentDownloadError("no downloadable resume found")
         if detected_suffix != suffix:
             dest = resume_cache_path(url, candidate.name, detected_suffix)
     except requests.HTTPError as exc:
